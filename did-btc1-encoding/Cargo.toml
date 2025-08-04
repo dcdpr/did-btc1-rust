@@ -1,0 +1,14 @@
+[package]
+name = "did-btc1-encoding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Encoding and decoding for DID:BTC1 identifiers"
+
+[dependencies]
+onlyerror.workspace = true
+bech32-rust = { path = "../../bech32-rust" }
+
+[dev-dependencies]
