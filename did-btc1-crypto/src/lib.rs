@@ -49,7 +49,7 @@ pub mod verification;
 pub mod zcap;
 
 // Re-exports of key components
-pub use cryptosuite::{CryptoSuite, InstantiateCryptoSuite};
+pub use cryptosuite::CryptoSuite;
 pub use document::Document;
 pub use error::Error;
 pub use key::{KeyFormat, KeyPair, PublicKey, SecretKey};

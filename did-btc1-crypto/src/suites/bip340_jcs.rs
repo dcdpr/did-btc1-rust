@@ -230,11 +230,11 @@ impl CryptoSuite for Bip340JcsSuite {
                 Error::ProofGeneration("Missing verificationMethod in proof options".to_string())
             })?;
 
-        // In a real implementation, retrieve the private key from storage
+        // In a real implementation, retrieve the private key associated with
+        // the "verificationMethod"
         // For this stub, we'll just generate a dummy signature
 
         // TODO: Implement actual key retrieval
-        // For now, just return a mock signature
         let private_key_bytes = [0u8; 32]; // Placeholder
 
         // Ensure hash data is exactly 32 bytes

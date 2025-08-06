@@ -29,15 +29,6 @@ pub trait CryptoSuite {
     fn verify(&self, hash_data: &[u8], proof_bytes: &[u8], options: &Proof) -> Result<bool>;
 }
 
-/// Trait for instantiating a cryptographic suite
-pub trait InstantiateCryptoSuite {
-    /// The type of cryptographic suite this creates
-    type Suite: CryptoSuite;
-
-    /// Instantiate a new cryptographic suite
-    fn instantiate(options: &ProofOptions) -> Result<Self::Suite>;
-}
-
 /// Factory function to instantiate a cryptosuite by name
 pub fn instantiate_cryptosuite(
     cryptosuite: &str,
