@@ -1,7 +1,7 @@
-/target
+target/
 
 # RustRover project files
-/.idea
+.idea/
 
 # Emacs droppings
 *~

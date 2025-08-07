@@ -41,7 +41,7 @@ pub const DID_BTC1_PREFIX: &str = "did:btc1:";
 /// Human-readable part for key-based DID identifiers
 pub const HRP_KEY: &str = "k";
 
-/// Human-readable part for external document-based DID identifiers  
+/// Human-readable part for external document-based DID identifiers
 pub const HRP_EXTERNAL: &str = "x";
 
 /// Expected length of a compressed secp256k1 public key
@@ -210,6 +210,8 @@ impl DidComponents {
         })
     }
 }
+
+// todo: make a parent struct, DID, which wraps DidComponents and the original DID str
 
 /// Parse a DID:BTC1 identifier string into its components
 ///

@@ -1,11 +1,15 @@
+use crate::error::{Error, Result};
+use crate::key::{KeyFormat, PublicKey};
+use crate::proof::Proof;
+use did_btc1_encoding::DidComponents;
 use serde::de::Error as SerdeError;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use std::fs;
 use std::path::Path;
 
-use crate::error::{Error, Result};
-use crate::proof::Proof;
+const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
+const DID_BTC1_CONTEXT: &str = "https://did-btc1/TBD/context";
 
 /// Represents a JSON or JSON-LD document
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,8 +101,31 @@ impl Document {
             _ => None,
         })
     }
-}
 
+    pub fn deterministically_generate_initial_did_document(
+        did: &str,
+        did_components: &DidComponents,
+    ) -> Result<Document> {
+        let key_bytes = &did_components.genesis_bytes;
+        let verification_method_id = format!("{did}#initialKey");
+        let verification_method_ids = json!([verification_method_id]);
+
+        Self::from_json_value(json!({
+            "id": did,
+            "@context": [DID_CORE_V1_1_CONTEXT, DID_BTC1_CONTEXT],
+            "verificationMethod": [{
+                "id": verification_method_id,
+                "type": "MultiKey",
+                "controller": did,
+                "publicKeyMultibase": PublicKey::from_bytes(key_bytes)?.encode(KeyFormat::Multikey)?,
+            }],
+            "authentication": verification_method_ids,
+            "assertionMethod": verification_method_ids,
+            "capabilityInvocation": verification_method_ids,
+            "capabilityDelegation": verification_method_ids,
+        }))
+    }
+}
 impl Default for Document {
     fn default() -> Self {
         Self::new()

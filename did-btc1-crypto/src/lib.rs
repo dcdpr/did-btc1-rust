@@ -40,6 +40,7 @@
 
 pub mod cryptosuite;
 pub mod document;
+pub mod document_management;
 pub mod error;
 pub mod key;
 pub mod proof;
@@ -57,5 +58,3 @@ pub use proof::{Proof, ProofOptions, ProofPurpose, VerificationResult};
 pub use verification::VerificationMethod;
 
 mod did;
-#[cfg(test)]
-mod tests;

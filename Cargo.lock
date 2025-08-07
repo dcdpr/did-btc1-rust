@@ -188,6 +188,12 @@ version = "0.1.0"
 [[package]]
 name = "did-btc1-resolver"
 version = "0.1.0"
+dependencies = [
+ "did-btc1-crypto",
+ "did-btc1-encoding",
+ "onlyerror",
+ "serde_json",
+]
 
 [[package]]
 name = "digest"
