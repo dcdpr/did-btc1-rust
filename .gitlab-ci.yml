@@ -1,0 +1,74 @@
+rustup-update:
+  stage: .pre
+  needs: []
+  tags:
+    - shell-executor
+  script:
+    - rustc --version
+    - rustup update
+    - rustc --version
+
+cargo-check:
+  stage: build
+  needs: []
+  tags:
+    - shell-executor
+  script:
+    - cargo check --workspace --benches --examples --tests --all-features
+
+cargo-check:release:
+  stage: build
+  needs: []
+  tags:
+    - shell-executor
+  script:
+    - cargo check --workspace --benches --examples --tests --all-features --release
+
+cargo-deny:
+  stage: build
+  needs: []
+  tags:
+    - shell-executor
+  script:
+    - cargo install --locked cargo-deny --version 0.16.2
+    - cargo deny --locked --workspace check all
+
+cargo-fmt:
+  stage: build
+  needs: ["cargo-check", "cargo-check:release", "cargo-deny"]
+  tags:
+    - shell-executor
+  script:
+    - cargo fmt --all -- --check
+
+cargo-doc:
+  stage: build
+  needs: ["cargo-check", "cargo-check:release", "cargo-deny"]
+  tags:
+    - shell-executor
+  variables:
+    RUSTDOCFLAGS: "-D warnings"
+  script:
+    - cargo doc --workspace --no-deps
+
+cargo-clippy:
+  stage: build
+  needs: ["cargo-check", "cargo-check:release", "cargo-deny"]
+  tags:
+    - shell-executor
+  script:
+    - cargo clippy --all --tests -- -D warnings
+
+cargo-test:
+  stage: test
+  tags:
+    - shell-executor
+  script:
+    - cargo test --workspace
+
+cargo-test:release:
+  stage: test
+  tags:
+    - shell-executor
+  script:
+    - cargo test --workspace --release
