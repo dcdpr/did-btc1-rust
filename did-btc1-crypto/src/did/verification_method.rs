@@ -34,7 +34,7 @@ impl DidVerificationMethod {
     /// * `Err(Error)` - If creation fails
     pub fn new(did_identifier: &str, fragment: &str, public_key: &PublicKey) -> Result<Self> {
         // Validate DID identifier
-        did_btc1_encoding::parse_did_identifier(did_identifier)
+        did_btc1_identifier::parse_did_identifier(did_identifier)
             .map_err(|e| Error::DidKey(format!("Invalid DID identifier: {e:?}")))?;
 
         // Create verification method ID
@@ -76,7 +76,7 @@ impl DidVerificationMethod {
     /// * `Err(Error)` - If the DID is not key-based or creation fails
     pub fn create_initial_key(did_identifier: &str) -> Result<Self> {
         // Parse the DID identifier
-        let components = did_btc1_encoding::parse_did_identifier(did_identifier)
+        let components = did_btc1_identifier::parse_did_identifier(did_identifier)
             .map_err(|e| Error::DidKey(format!("Invalid DID identifier: {e:?}")))?;
 
         // Extract public key from key-based DID

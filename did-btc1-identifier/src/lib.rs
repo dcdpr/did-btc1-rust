@@ -15,23 +15,25 @@
 //! ## Examples
 //!
 //! ```rust
-//! use did_btc1_encoding::{parse_did_identifier, encode_did_identifier, DidComponents, Network, IdType, DidEncodingError};
+//! use did_btc1_identifier::{parse_did_identifier, encode_did_identifier, DidComponents, Network, IdType, DidEncodingError, DidVersion};
 //!
 //! // Parse a DID identifier
 //! let did = "did:btc1:k1qqpuwwde82nennsavvf0lqfnlvx7frrgzs57lchr02q8mz49qzaaxmqphnvcx";
 //! let components = parse_did_identifier(did)?;
 //!
-//! assert_eq!(components.version, 1);
-//! assert_eq!(components.network, Network::Mainnet);
-//! assert_eq!(components.id_type, IdType::Key);
+//! assert_eq!(components.version(), DidVersion::One);
+//! assert_eq!(components.network(), Network::Mainnet);
+//! assert_eq!(components.id_type(), IdType::Key);
 //!
 //! // Create a new DID identifier
 //! let genesis_bytes = [0u8; 33]; // 33-byte compressed secp256k1 public key
-//! let did = encode_did_identifier(1, Network::Mainnet, IdType::Key, &genesis_bytes)?;
+//! let did = encode_did_identifier(DidVersion::One, Network::Mainnet, IdType::Key, &genesis_bytes)?;
 //! # Ok::<(), DidEncodingError>(())
 //! ```
 
 use onlyerror::Error;
+use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 use bech32_rust::{Bech32Error, decode, encode};
 
@@ -58,7 +60,7 @@ pub enum DidEncodingError {
     InvalidDidFormat(String),
 
     /// Invalid version number
-    #[error("Invalid version: {0} (must be 1-16)")]
+    #[error("Invalid version: {0} (must be 1-16)")] // todo: probably don't need this
     InvalidVersion(u8),
 
     /// Invalid network identifier
@@ -82,8 +84,79 @@ pub enum DidEncodingError {
     InvalidIdType(String),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Did {
+    encoded: String,
+    components: DidComponents,
+    // TODO: Maybe we want the fragment here?
+    // fragment: Option<String>,
+}
+
+impl FromStr for Did {
+    type Err = DidEncodingError;
+
+    fn from_str(did: &str) -> Result<Self, Self::Err> {
+        let components = parse_did_identifier(did)?;
+
+        Ok(Self {
+            encoded: did.to_string(),
+            components,
+        })
+    }
+}
+
+impl From<DidComponents> for Did {
+    fn from(components: DidComponents) -> Self {
+        let encoded = encode_did_identifier(
+            components.version,
+            components.network,
+            components.id_type,
+            &components.genesis_bytes,
+        )
+        .unwrap();
+
+        Self {
+            encoded,
+            components,
+        }
+    }
+}
+
+impl Did {
+    pub fn encode(&self) -> &str {
+        &self.encoded
+    }
+
+    pub fn components(&self) -> &DidComponents {
+        &self.components
+    }
+}
+
+/// DID:BTC1 encoding version
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DidVersion {
+    One = 1,
+}
+
+impl TryFrom<u8> for DidVersion {
+    type Error = DidEncodingError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::One),
+            _ => Err(DidEncodingError::InvalidVersion(value)),
+        }
+    }
+}
+
+impl From<DidVersion> for u8 {
+    fn from(value: DidVersion) -> Self {
+        value as u8
+    }
+}
+
 /// Bitcoin networks supported by DID:BTC1
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Network {
     /// Bitcoin mainnet
@@ -102,6 +175,7 @@ pub enum Network {
     Custom(u8),
 }
 
+// TODO: Use `TryFrom` and `From`
 impl Network {
     /// Convert from network nibble (4 bits)
     pub fn from_nibble(nibble: u8) -> Result<Self, DidEncodingError> {
@@ -132,7 +206,7 @@ impl Network {
 }
 
 /// Type of DID identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IdType {
     /// Key-based identifier (secp256k1 public key)
     Key,
@@ -168,31 +242,26 @@ impl IdType {
 }
 
 /// Components of a parsed DID:BTC1 identifier
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DidComponents {
     /// Specification version (1-16)
-    pub version: u8,
+    version: DidVersion,
     /// Bitcoin network
-    pub network: Network,
+    network: Network,
     /// Identifier type
-    pub id_type: IdType,
+    id_type: IdType,
     /// Genesis bytes (public key or hash)
-    pub genesis_bytes: Vec<u8>,
+    genesis_bytes: Vec<u8>,
 }
 
 impl DidComponents {
     /// Create new DID components with validation
     pub fn new(
-        version: u8,
+        version: DidVersion,
         network: Network,
         id_type: IdType,
         genesis_bytes: Vec<u8>,
     ) -> Result<Self, DidEncodingError> {
-        // Validate version
-        if !(1..=16).contains(&version) {
-            return Err(DidEncodingError::InvalidVersion(version));
-        }
-
         // Validate genesis bytes length
         let expected_len = id_type.expected_genesis_length();
         if genesis_bytes.len() != expected_len {
@@ -208,6 +277,22 @@ impl DidComponents {
             id_type,
             genesis_bytes,
         })
+    }
+
+    pub fn version(&self) -> DidVersion {
+        self.version
+    }
+
+    pub fn network(&self) -> Network {
+        self.network
+    }
+
+    pub fn id_type(&self) -> IdType {
+        self.id_type
+    }
+
+    pub fn genesis_bytes(&self) -> &[u8] {
+        &self.genesis_bytes
     }
 }
 
@@ -227,14 +312,14 @@ impl DidComponents {
 /// # Examples
 ///
 /// ```rust
-/// use did_btc1_encoding::{parse_did_identifier, Network, IdType, DidEncodingError};
+/// use did_btc1_identifier::{parse_did_identifier, Network, IdType, DidEncodingError, DidVersion};
 ///
 /// let did = "did:btc1:k1qqpuwwde82nennsavvf0lqfnlvx7frrgzs57lchr02q8mz49qzaaxmqphnvcx";
 /// let components = parse_did_identifier(did)?;
 ///
-/// assert_eq!(components.version, 1);
-/// assert_eq!(components.network, Network::Mainnet);
-/// assert_eq!(components.id_type, IdType::Key);
+/// assert_eq!(components.version(), DidVersion::One);
+/// assert_eq!(components.network(), Network::Mainnet);
+/// assert_eq!(components.id_type(), IdType::Key);
 /// # Ok::<(), DidEncodingError>(())
 /// ```
 pub fn parse_did_identifier(did: &str) -> Result<DidComponents, DidEncodingError> {
@@ -271,7 +356,7 @@ pub fn parse_did_identifier(did: &str) -> Result<DidComponents, DidEncodingError
     let genesis_bytes = decoded.dp[1..].to_vec();
 
     // Create and validate components
-    DidComponents::new(version, network, id_type, genesis_bytes)
+    DidComponents::new(version.try_into()?, network, id_type, genesis_bytes)
 }
 
 /// Encode DID components into a DID:BTC1 identifier string
@@ -291,24 +376,19 @@ pub fn parse_did_identifier(did: &str) -> Result<DidComponents, DidEncodingError
 /// # Examples
 ///
 /// ```rust
-/// use did_btc1_encoding::{encode_did_identifier, Network, IdType, DidEncodingError};
+/// use did_btc1_identifier::{encode_did_identifier, Network, IdType, DidEncodingError, DidVersion};
 ///
 /// let genesis_bytes = [0u8; 33]; // 33-byte compressed secp256k1 public key
-/// let did = encode_did_identifier(1, Network::Mainnet, IdType::Key, &genesis_bytes)?;
+/// let did = encode_did_identifier(DidVersion::One, Network::Mainnet, IdType::Key, &genesis_bytes)?;
 /// assert!(did.starts_with("did:btc1:k1"));
 /// # Ok::<(), DidEncodingError>(())
 /// ```
 pub fn encode_did_identifier(
-    version: u8,
+    version: DidVersion,
     network: Network,
     id_type: IdType,
     genesis_bytes: &[u8],
 ) -> Result<String, DidEncodingError> {
-    // Validate version
-    if !(1..=16).contains(&version) {
-        return Err(DidEncodingError::InvalidVersion(version));
-    }
-
     // Validate genesis bytes length
     let expected_len = id_type.expected_genesis_length();
     if genesis_bytes.len() != expected_len {
@@ -322,7 +402,7 @@ pub fn encode_did_identifier(
     let mut data = Vec::with_capacity(1 + genesis_bytes.len());
 
     // First byte: version (high nibble) + network (low nibble)
-    let version_nibble = (version - 1) & 0x0F; // Version - 1, mask to 4 bits
+    let version_nibble = (u8::from(version) - 1) & 0x0F; // Version - 1, mask to 4 bits
     let network_nibble = network.to_nibble() & 0x0F; // Mask to 4 bits
     let version_network_byte = (version_nibble << 4) | network_nibble;
     data.push(version_network_byte);
@@ -416,12 +496,18 @@ mod tests {
     #[test]
     fn test_encode_decode_key_based() {
         let genesis_bytes = vec![0u8; 33]; // 33-byte compressed public key
-        let did = encode_did_identifier(1, Network::Mainnet, IdType::Key, &genesis_bytes).unwrap();
+        let did = encode_did_identifier(
+            DidVersion::One,
+            Network::Mainnet,
+            IdType::Key,
+            &genesis_bytes,
+        )
+        .unwrap();
 
         assert!(did.starts_with("did:btc1:k1"));
 
         let components = parse_did_identifier(&did).unwrap();
-        assert_eq!(components.version, 1);
+        assert_eq!(u8::from(components.version), 1);
         assert_eq!(components.network, Network::Mainnet);
         assert_eq!(components.id_type, IdType::Key);
         assert_eq!(components.genesis_bytes, genesis_bytes);
@@ -430,13 +516,18 @@ mod tests {
     #[test]
     fn test_encode_decode_external() {
         let genesis_bytes = vec![0xffu8; 32]; // 32-byte hash
-        let did =
-            encode_did_identifier(2, Network::Signet, IdType::External, &genesis_bytes).unwrap();
+        let did = encode_did_identifier(
+            DidVersion::One,
+            Network::Signet,
+            IdType::External,
+            &genesis_bytes,
+        )
+        .unwrap();
 
         assert!(did.starts_with("did:btc1:x1"));
 
         let components = parse_did_identifier(&did).unwrap();
-        assert_eq!(components.version, 2);
+        assert_eq!(u8::from(components.version), 1);
         assert_eq!(components.network, Network::Signet);
         assert_eq!(components.id_type, IdType::External);
         assert_eq!(components.genesis_bytes, genesis_bytes);
@@ -449,19 +540,10 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_version() {
-        let genesis_bytes = vec![0u8; 33];
-        let result = encode_did_identifier(0, Network::Mainnet, IdType::Key, &genesis_bytes);
-        assert!(matches!(result, Err(DidEncodingError::InvalidVersion(0))));
-
-        let result = encode_did_identifier(17, Network::Mainnet, IdType::Key, &genesis_bytes);
-        assert!(matches!(result, Err(DidEncodingError::InvalidVersion(17))));
-    }
-
-    #[test]
     fn test_invalid_genesis_length() {
         let short_bytes = vec![0u8; 10];
-        let result = encode_did_identifier(1, Network::Mainnet, IdType::Key, &short_bytes);
+        let result =
+            encode_did_identifier(DidVersion::One, Network::Mainnet, IdType::Key, &short_bytes);
         assert!(matches!(
             result,
             Err(DidEncodingError::InvalidGenesisLength(10, 33))
@@ -471,8 +553,13 @@ mod tests {
     #[test]
     fn test_extract_functions() {
         let genesis_bytes = vec![0x42u8; 33];
-        let did =
-            encode_did_identifier(1, Network::TestnetV4, IdType::Key, &genesis_bytes).unwrap();
+        let did = encode_did_identifier(
+            DidVersion::One,
+            Network::TestnetV4,
+            IdType::Key,
+            &genesis_bytes,
+        )
+        .unwrap();
 
         assert_eq!(extract_network(&did).unwrap(), Network::TestnetV4);
         assert_eq!(extract_genesis_bytes(&did).unwrap(), genesis_bytes);
@@ -483,8 +570,13 @@ mod tests {
     #[test]
     fn test_custom_network() {
         let genesis_bytes = vec![0u8; 33];
-        let did =
-            encode_did_identifier(1, Network::Custom(15), IdType::Key, &genesis_bytes).unwrap();
+        let did = encode_did_identifier(
+            DidVersion::One,
+            Network::Custom(15),
+            IdType::Key,
+            &genesis_bytes,
+        )
+        .unwrap();
 
         let components = parse_did_identifier(&did).unwrap();
         assert_eq!(components.network, Network::Custom(15));

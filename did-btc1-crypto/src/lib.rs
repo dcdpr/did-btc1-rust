@@ -40,7 +40,6 @@
 
 pub mod cryptosuite;
 pub mod document;
-pub mod document_management;
 pub mod error;
 pub mod key;
 pub mod proof;

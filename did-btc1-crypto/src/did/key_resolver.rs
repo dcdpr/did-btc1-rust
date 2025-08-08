@@ -6,7 +6,7 @@
 use super::{extract_public_key_from_did, parse_verification_method_id};
 use crate::error::{Error, Result};
 use crate::key::{PublicKey, SecretKey};
-use did_btc1_encoding::parse_did_identifier;
+use did_btc1_identifier::parse_did_identifier;
 use std::collections::HashMap;
 
 /// Trait for resolving keys from DID verification method identifiers
@@ -191,7 +191,7 @@ impl DidKeyResolver for InMemoryKeyResolver {
         {
             if fragment == "initialKey" {
                 if let Ok(components) = parse_did_identifier(&did_identifier) {
-                    return matches!(components.id_type, did_btc1_encoding::IdType::Key);
+                    return matches!(components.id_type(), did_btc1_identifier::IdType::Key);
                 }
             }
         }

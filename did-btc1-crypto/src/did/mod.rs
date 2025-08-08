@@ -10,14 +10,14 @@ pub mod verification_method;
 pub use key_resolver::{DidKeyResolver, InMemoryKeyResolver};
 
 use crate::error::Result;
-use did_btc1_encoding::{DidComponents, parse_did_identifier};
+use did_btc1_identifier::{DidComponents, parse_did_identifier};
 
 /// Extract a public key from DID:BTC1 identifier components
 ///
 /// For key-based DIDs, this extracts the secp256k1 public key from the genesis bytes.
 /// For external DIDs, this returns an error since they don't contain embedded keys.
 ///
-/// # Arguments  
+/// # Arguments
 ///
 /// * `components` - Parsed DID identifier components
 ///
@@ -26,18 +26,18 @@ use did_btc1_encoding::{DidComponents, parse_did_identifier};
 /// * `Ok(Vec<u8>)` - The public key bytes (33-byte compressed secp256k1)
 /// * `Err(Error)` - If the DID doesn't contain a key or is invalid
 pub fn extract_public_key_from_did(components: &DidComponents) -> Result<Vec<u8>> {
-    match components.id_type {
-        did_btc1_encoding::IdType::Key => {
+    match components.id_type() {
+        did_btc1_identifier::IdType::Key => {
             // Genesis bytes should be a 33-byte compressed secp256k1 public key
-            if components.genesis_bytes.len() != 33 {
+            if components.genesis_bytes().len() != 33 {
                 return Err(crate::error::Error::DidKey(format!(
                     "Invalid key length: expected 33 bytes, got {}",
-                    components.genesis_bytes.len()
+                    components.genesis_bytes().len()
                 )));
             }
-            Ok(components.genesis_bytes.clone())
+            Ok(components.genesis_bytes().to_vec())
         }
-        did_btc1_encoding::IdType::External => Err(crate::error::Error::DidKey(
+        did_btc1_identifier::IdType::External => Err(crate::error::Error::DidKey(
             "External DIDs do not contain embedded public keys".to_string(),
         )),
     }
@@ -96,7 +96,7 @@ pub fn create_verification_method_id(did_identifier: &str, fragment: &str) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use did_btc1_encoding::{IdType, Network};
+    use did_btc1_identifier::{DidVersion, IdType, Network};
 
     const TEST_DID: &str =
         "did:btc1:k1qqpuwwde82nennsavvf0lqfnlvx7frrgzs57lchr02q8mz49qzaaxmqphnvcx";
@@ -109,18 +109,19 @@ mod tests {
         let public_key = extract_public_key_from_did(&components).unwrap();
 
         assert_eq!(public_key.len(), 33);
-        assert_eq!(components.id_type, IdType::Key);
+        assert_eq!(components.id_type(), IdType::Key);
     }
 
     #[test]
     fn test_extract_public_key_from_external_did_fails() {
         // Create external DID components
-        let external_components = DidComponents {
-            version: 1,
-            network: Network::Mainnet,
-            id_type: IdType::External,
-            genesis_bytes: vec![0u8; 32], // 32-byte hash
-        };
+        let external_components = DidComponents::new(
+            DidVersion::One,
+            Network::Mainnet,
+            IdType::External,
+            vec![0u8; 32], // 32-byte hash
+        )
+        .unwrap();
 
         let result = extract_public_key_from_did(&external_components);
         assert!(result.is_err());

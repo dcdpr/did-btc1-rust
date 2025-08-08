@@ -1,11 +1,11 @@
 use did_btc1_crypto::Document;
-use did_btc1_encoding::{DidComponents, IdType, Network};
+use did_btc1_identifier::{DidComponents, IdType, Network};
 use onlyerror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
     /// DID encoding error
-    DidEncoding(#[from] did_btc1_encoding::DidEncodingError),
+    DidEncoding(#[from] did_btc1_identifier::DidEncodingError),
 
     /// Document generation error
     DocumentGeneration(#[from] did_btc1_crypto::error::Error),
@@ -22,13 +22,13 @@ pub struct ResolutionOptions {
 impl Resolver {
     // TODO: Strongly type `Did` instead of strings.
     pub fn resolve(did: &str, resolution_options: ResolutionOptions) -> Result<Document, Error> {
-        let did_components = did_btc1_encoding::parse_did_identifier(did)?;
+        let did_components = did_btc1_identifier::parse_did_identifier(did)?;
 
         let initial_document = resolve_initial_document(did, &did_components, &resolution_options)?;
         resolve_target_document(
             initial_document,
             &resolution_options,
-            did_components.network,
+            did_components.network(),
         )
     }
 }
@@ -39,7 +39,7 @@ fn resolve_initial_document(
     resolution_options: &ResolutionOptions,
 ) -> Result<Document, Error> {
     // Spec section 4.2.1
-    match did_components.id_type {
+    match did_components.id_type() {
         IdType::Key => Ok(Document::deterministically_generate_initial_did_document(
             did,
             did_components,
@@ -70,8 +70,10 @@ mod tests {
     fn test_resolve() {
         let did = "did:btc1:k1qgp5h79scv4sfqkzak5g6y89dsy3cq0pd2nussu2cm3zjfhn4ekwrucc4q7t7";
         let document = Resolver::resolve(did, ResolutionOptions::default()).unwrap();
-        assert_eq!(document.data.get("id").unwrap(), did);
-        assert_eq!(document.data.get("service").unwrap().as_array().unwrap()[0].get("type").unwrap(), "SingletonBeacon");
+        assert_eq!(document.data["id"], did);
+        assert_eq!(
+            document.data["service"].as_array().unwrap()[0]["type"],
+            "SingletonBeacon"
+        );
     }
-
 }
