@@ -25,6 +25,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 onlyerror = "0.1"
 tokio = { version = "1.0", features = ["full"] }
+idna_adapter = "=1.1.0"
 url = { version = "2", features = ["serde"] }
 
 # Cryptography
