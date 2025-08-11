@@ -4,12 +4,20 @@ use std::io;
 #[derive(Error, Debug)]
 pub enum Error {
     /// Error during document I/O operations
-    #[error("Document I/O error: {0}")]
+    #[error("Document I/O error")]
     DocumentIO(#[from] io::Error),
 
     /// Error parsing JSON document
-    #[error("JSON parse error: {0}")]
+    #[error("JSON parse error")]
     JsonParse(#[from] serde_json::Error),
+
+    /// Error converting JSON Value to str
+    #[error("Value can't be converted to str for key `{0}`")]
+    JsonValueStr(String),
+
+    /// Expected JSON string
+    #[error("Expected JSON string")]
+    ExpectedJsonStr,
 
     /// Error during proof transformation
     #[error("Proof transformation error: {0}")]
@@ -62,6 +70,10 @@ pub enum Error {
     /// Generic error
     #[error("{0}")]
     Other(String),
+
+    #[error("DID Encoding error")]
+    DidEncoding(#[from] did_btc1_identifier::DidEncodingError),
+
 }
 
 /// Result type for this crate

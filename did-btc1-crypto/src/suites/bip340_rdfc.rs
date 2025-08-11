@@ -34,6 +34,8 @@ impl CryptoSuite for Bip340RdfcSuite {
     }
 
     fn create_proof(&self, document: &Document, options: &ProofOptions) -> Result<Document> {
+        // TODO: need strong types in here too
+
         // Clone proof options
         let mut proof_options = options.options.clone();
 
@@ -197,9 +199,8 @@ impl CryptoSuite for Bip340RdfcSuite {
         }
 
         // Add document context
-        if let Some(context) = document.get_context() {
-            proof_config.insert("@context".to_string(), Value::Array(context));
-        }
+        // todo: commented since it wasn't working with new Document embedded types
+        // proof_config.insert("@context".to_string(), Value::from_iter(document.get_context()));
 
         // Apply RDFC canonicalization to proof config
         let _config_value = Value::Object(serde_json::Map::from_iter(proof_config));

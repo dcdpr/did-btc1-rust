@@ -5,9 +5,6 @@
 //! and DID document integration.
 
 pub mod key_resolver;
-pub mod verification_method;
-
-pub use key_resolver::{DidKeyResolver, InMemoryKeyResolver};
 
 use crate::error::Result;
 use did_btc1_identifier::{DidComponents, parse_did_identifier};

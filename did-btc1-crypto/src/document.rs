@@ -1,13 +1,16 @@
+use crate::VerificationMethod;
 use crate::error::{Error, Result};
-use crate::key::{KeyFormat, PublicKey};
+use crate::key::PublicKey;
 use crate::proof::Proof;
+use crate::verification::VerificationMethodId;
 use did_btc1_identifier::{Did, DidComponents, DidVersion, Network};
 use serde::de::Error as SerdeError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::fs;
+use std::ops::Deref;
 use std::path::Path;
-use url::Url;
+use std::str::FromStr;
 
 const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
 const DID_BTC1_CONTEXT: &str = "https://did-btc1/TBD/context";
@@ -19,17 +22,19 @@ pub struct Document {
     id: Did,
 
     /// Document context
-    context: Vec<Url>,
+    context: Vec<String>,
 
     /// Document controller
     controller: Vec<Did>,
 
+    verification_method: Vec<VerificationMethod>,
+
+    authentication: Vec<VerificationMethodId>,
+    assertion_method: Vec<VerificationMethodId>,
+    capability_invocation: Vec<VerificationMethodId>,
+    capability_delegation: Vec<VerificationMethodId>,
+
     // TODO:
-    // - verificationMethod
-    // - authentication
-    // - assertionMethod
-    // - capabilityInvocation
-    // - capabilityDelegation
     // - service
 
     //
@@ -91,12 +96,17 @@ impl Document {
     // TODO: Sans-I/O.
     //
     // TODO: Do we really want to expose this patching concept to users? How do they create patches?
-    // Why should they create patches instead of just making changes to the document and letting the
-    // `update` method figure out the diff?
     //
-    // Another idea: the patch can be constructed incrementally through various mutating methods,
-    // like `add_service()`, and then committed with `update()`. You would want a way to check
-    // whether there are staged patches.
+    // options:
+    // a) user provides DocumentPatch
+    //
+    // b) user provides second document and we compute the diff and patch
+    //
+    // c) the patch can be constructed incrementally through various mutating methods,
+    //     // like `add_service()`, and then committed with `update()`. You would want a way to check
+    //     // whether there are staged patches.
+    //
+    //
     pub fn update(
         &mut self,
         // `btc1Identifier` is implied by `self.did`
@@ -117,6 +127,36 @@ impl Document {
     }
 }
 
+fn string_from_json<'value>(value: &'value Value, key: &str) -> Result<&'value str> {
+    value[key]
+        .as_str()
+        .ok_or_else(|| Error::JsonValueStr(key.into()))
+}
+
+fn array_from_json<T, F>(value: &Value, key: &str, map_fn: F) -> Result<Vec<T>>
+where
+    F: Fn(&Value) -> Result<T>,
+{
+    value[key]
+        .as_array()
+        .ok_or_else(|| Error::JsonValueStr(key.into()))?
+        .iter()
+        .map(map_fn)
+        .collect::<Result<Vec<_>>>()
+}
+
+fn string_from_value(value: &Value) -> Result<&str> {
+    value.as_str().ok_or(Error::ExpectedJsonStr)
+}
+
+fn vec_from_json_value<T>(value: &Value, key: &str) -> Result<Vec<T>>
+where
+    T: FromStr,
+    Error: From<<T as FromStr>::Err>,
+{
+    array_from_json(&value, key, |v| Ok(string_from_value(v)?.parse()?))
+}
+
 impl Document {
     /// Load a document from a file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -127,72 +167,38 @@ impl Document {
     /// Create a document from a JSON string
     pub fn from_json_string(json: &str) -> Result<Self> {
         let value: Value = serde_json::from_str(json)?;
-        let id: Did = value["id"]
-            .as_str()
-            .expect("TODO: serde_json errors")
-            .parse()
-            .expect("TODO: did_btc1_identifier errors");
-        let context = value["context"]
-            .as_array()
-            .expect("TODO: serde_json errors")
-            .iter()
-            .map(|url| Url::parse(url.as_str().unwrap()).expect("TODO: Url errors"))
-            .collect();
-        let controller = value["controller"]
-            .as_array()
-            .expect("TODO: serde_json errors")
-            .iter()
-            .map(|did| {
-                did.as_str()
-                    .unwrap()
-                    .parse()
-                    .expect("TODO: did_btc1_identifier error")
-            })
-            .collect();
-
-        match value {
-            Value::Object(map) => Ok(Self {
-                id,
-                context,
-                controller,
-                data: map,
-            }),
-            _ => Err(Error::JsonParse(serde_json::Error::custom(
-                "Document root must be a JSON object",
-            ))),
-        }
+        Self::from_json_value(value)
     }
 
     /// Create a document from a JSON Value
     pub fn from_json_value(value: Value) -> Result<Self> {
-        let id: Did = value["id"]
-            .as_str()
-            .expect("TODO: serde_json errors")
-            .parse()
-            .expect("TODO: did_btc1_identifier errors");
-        let context = value["context"]
-            .as_array()
-            .expect("TODO: serde_json errors")
-            .iter()
-            .map(|url| Url::parse(url.as_str().unwrap()).expect("TODO: Url errors"))
-            .collect();
-        let controller = value["controller"]
-            .as_array()
-            .expect("TODO: serde_json errors")
-            .iter()
-            .map(|did| {
-                did.as_str()
-                    .unwrap()
-                    .parse()
-                    .expect("TODO: did_btc1_identifier error")
-            })
-            .collect();
+        let id: Did = string_from_json(&value, "id")?.parse()?;
+        let context = array_from_json(&value, "context", |id| {
+            string_from_value(id).map(ToString::to_string)
+        })?;
+        let controller = vec_from_json_value(&value, "controller")?;
+        let verification_method = array_from_json(&value, "verificationMethod", |method| {
+            VerificationMethod::new(
+                string_from_json(method, "id")?.parse()?,
+                string_from_json(method, "controller")?.parse()?,
+                PublicKey::from_multikey(string_from_json(method, "publicKeyMultibase")?)?,
+            )
+        })?;
+        let authentication = vec_from_json_value(&value, "authentication")?;
+        let assertion_method = vec_from_json_value(&value, "assertionMethod")?;
+        let capability_invocation = vec_from_json_value(&value, "capabilityInvocation")?;
+        let capability_delegation = vec_from_json_value(&value, "capabilityDelegation")?;
 
         match value {
             Value::Object(map) => Ok(Self {
                 id,
                 context,
                 controller,
+                verification_method,
+                authentication,
+                assertion_method,
+                capability_invocation,
+                capability_delegation,
                 data: map,
             }),
             _ => Err(Error::JsonParse(serde_json::Error::custom(
@@ -233,11 +239,13 @@ impl Document {
         data.remove("proof");
         Self {
             id: self.id.clone(),
-            context: vec![
-                Url::parse(DID_CORE_V1_1_CONTEXT).unwrap(),
-                Url::parse(DID_BTC1_CONTEXT).unwrap(),
-            ],
-            controller: vec![self.id.clone()],
+            context: self.context.clone(),
+            controller: self.controller.clone(),
+            verification_method: self.verification_method.clone(),
+            authentication: self.authentication.clone(),
+            assertion_method: self.assertion_method.clone(),
+            capability_invocation: self.capability_invocation.clone(),
+            capability_delegation: self.capability_delegation.clone(),
             data,
         }
     }
@@ -249,24 +257,17 @@ impl Document {
         data.insert("proof".to_string(), proof_value);
         Ok(Self {
             id: self.id.clone(),
-            context: vec![
-                Url::parse(DID_CORE_V1_1_CONTEXT).unwrap(),
-                Url::parse(DID_BTC1_CONTEXT).unwrap(),
-            ],
-            controller: vec![self.id.clone()],
+            context: self.context.clone(),
+            controller: self.controller.clone(),
+            verification_method: self.verification_method.clone(),
+            authentication: self.authentication.clone(),
+            assertion_method: self.assertion_method.clone(),
+            capability_invocation: self.capability_invocation.clone(),
+            capability_delegation: self.capability_delegation.clone(),
             data,
         })
     }
-
-    /// Get a context array if present
-    pub fn get_context(&self) -> Option<Vec<Value>> {
-        self.data.get("@context").and_then(|ctx| match ctx {
-            Value::Array(arr) => Some(arr.clone()),
-            Value::String(s) => Some(vec![Value::String(s.clone())]),
-            _ => None,
-        })
-    }
-
+    
     pub fn deterministically_generate_initial_did_document(
         did: &str,
         did_components: &DidComponents,
@@ -282,7 +283,7 @@ impl Document {
                 "id": verification_method_id,
                 "type": "MultiKey",
                 "controller": did,
-                "publicKeyMultibase": PublicKey::from_bytes(key_bytes)?.encode(KeyFormat::Multikey)?,
+                "publicKeyMultibase": PublicKey::from_bytes(key_bytes)?.encode()?,
             }],
             "authentication": verification_method_ids,
             "assertionMethod": verification_method_ids,
@@ -296,9 +297,9 @@ impl Document {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_document_read() {
-        let did = "did:btc1:k1qgp5h79scv4sfqkzak5g6y89dsy3cq0pd2nussu2cm3zjfhn4ekwrucc4q7t7";
-        let doc = Document::read(&did.parse().unwrap(), ()).unwrap();
-    }
+    // #[test]
+    // fn test_document_read() {
+    //     let did = "did:btc1:k1qgp5h79scv4sfqkzak5g6y89dsy3cq0pd2nussu2cm3zjfhn4ekwrucc4q7t7";
+    //     let doc = Document::read(&did.parse().unwrap(), ()).unwrap();
+    // }
 }

@@ -1,16 +1,8 @@
 use crate::error::{Error, Result};
 use base58::ToBase58;
 use secp256k1::{Secp256k1, SecretKey as SecpSecretKey, XOnlyPublicKey};
+use serde::{Deserialize, Serialize, de::Visitor};
 use std::fmt;
-
-/// Format for key encoding/decoding
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyFormat {
-    /// Multikey format with base58-btc encoding
-    Multikey,
-    /// Raw bytes
-    Raw,
-}
 
 /// Represents a public key
 #[derive(Clone)]
@@ -58,35 +50,73 @@ impl PublicKey {
     }
 
     /// Encode the public key in a specific format
-    pub fn encode(&self, format: KeyFormat) -> Result<String> {
-        match format {
-            KeyFormat::Multikey => {
-                // Serialize to bytes
-                let key_bytes = self.key.serialize();
+    pub fn encode(&self) -> Result<String> {
+        // Serialize to bytes
+        let key_bytes = self.key.serialize();
 
-                // Prepend Multikey prefix for secp256k1 x-only (0xe14a)
-                let mut data = Vec::with_capacity(2 + key_bytes.len());
-                data.push(0xe1);
-                data.push(0x4a);
-                data.extend_from_slice(&key_bytes);
+        // Prepend Multikey prefix for secp256k1 x-only (0xe14a)
+        let mut data = Vec::with_capacity(2 + key_bytes.len());
+        data.push(0xe1);
+        data.push(0x4a);
+        data.extend_from_slice(&key_bytes);
 
-                // Encode with base58-btc
-                let encoded = data.to_base58();
+        // Encode with base58-btc
+        let encoded = data.to_base58();
 
-                // Prepend 'z' for base58-btc
-                Ok(format!("z{encoded}"))
-            }
-            KeyFormat::Raw => {
-                let bytes = self.key.serialize();
-                Ok(hex::encode(bytes))
-            }
-        }
+        // Prepend 'z' for base58-btc
+        Ok(format!("z{encoded}"))
+    }
+}
+
+impl Serialize for PublicKey {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(
+            &self
+                .encode()
+                .map_err(|err| serde::ser::Error::custom(err))?,
+        )
+    }
+}
+
+struct PublicKeyVisitor;
+
+impl<'de> Visitor<'de> for PublicKeyVisitor {
+    type Value = PublicKey;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "a multibase encoded secp256k1 public key")
+    }
+
+    fn visit_bytes<E>(self, bytes: &[u8]) -> std::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        PublicKey::from_bytes(bytes).map_err(|err| serde::de::Error::custom(err))
+    }
+
+    fn visit_str<E>(self, multikey: &str) -> std::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        PublicKey::from_multikey(multikey).map_err(|err| serde::de::Error::custom(err))
+    }
+}
+
+impl<'de> Deserialize<'de> for PublicKey {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(PublicKeyVisitor)
     }
 }
 
 impl fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.encode(KeyFormat::Multikey) {
+        match self.encode() {
             Ok(multikey) => write!(f, "PublicKey({multikey})"),
             Err(_) => write!(f, "PublicKey(<invalid>)"),
         }

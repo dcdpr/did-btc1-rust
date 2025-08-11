@@ -1,7 +1,10 @@
+use did_btc1_identifier::Did;
 use serde::{Deserialize, Serialize};
+use std::cmp::PartialEq;
+use std::str::FromStr;
 
 use crate::error::{Error, Result};
-use crate::key::{KeyFormat, PublicKey};
+use crate::key::PublicKey;
 
 /// Verification method types
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,39 +17,51 @@ pub enum VerificationMethodType {
     Other,
 }
 
+/// Verification method ID
+///
+/// These look like DIDs with a `#fragment`. Used to identify [`VerificationMethod`]s.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerificationMethodId(String);
+
+impl FromStr for VerificationMethodId {
+    type Err = Error;
+
+    fn from_str(method_id: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self(method_id.to_string()))
+    }
+}
+
 /// Represents a verification method for cryptographic proofs
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerificationMethod {
     /// Identifier for the verification method
-    pub id: String,
+    pub id: VerificationMethodId,
 
     /// Type of verification method
     #[serde(rename = "type")]
     pub type_: VerificationMethodType,
 
     /// The controller of this verification method
-    pub controller: String,
+    pub controller: Did,
 
-    /// Public key in multibase format
-    pub public_key_multibase: String,
+    /// Public key
+    public_key: PublicKey,
 }
 
 impl VerificationMethod {
     /// Create a new verification method
-    pub fn new(id: &str, controller: &str, public_key: &PublicKey) -> Result<Self> {
-        let public_key_multibase = public_key.encode(KeyFormat::Multikey)?;
-
+    pub fn new(id: VerificationMethodId, controller: Did, public_key: PublicKey) -> Result<Self> {
         Ok(Self {
-            id: id.to_string(),
+            id,
             type_: VerificationMethodType::Multikey,
-            controller: controller.to_string(),
-            public_key_multibase,
+            controller,
+            public_key,
         })
     }
 
     /// Get the public key from this verification method
-    pub fn public_key(&self) -> Result<PublicKey> {
+    pub fn public_key(&self) -> Result<&PublicKey> {
         if self.type_ != VerificationMethodType::Multikey {
             return Err(Error::Key(format!(
                 "Unsupported verification method type: {:?}",
@@ -54,7 +69,7 @@ impl VerificationMethod {
             )));
         }
 
-        PublicKey::from_multikey(&self.public_key_multibase)
+        Ok(&self.public_key)
     }
 }
 
@@ -78,7 +93,7 @@ impl MockVerificationMethodResolver {
     }
 
     /// Resolve a verification method by ID
-    pub fn resolve(&self, id: &str) -> Option<&VerificationMethod> {
+    pub fn resolve(&self, id: VerificationMethodId) -> Option<&VerificationMethod> {
         self.methods.iter().find(|m| m.id == id)
     }
 }

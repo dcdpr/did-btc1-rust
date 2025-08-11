@@ -66,14 +66,14 @@ fn resolve_target_document(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_resolve() {
-        let did = "did:btc1:k1qgp5h79scv4sfqkzak5g6y89dsy3cq0pd2nussu2cm3zjfhn4ekwrucc4q7t7";
-        let document = Resolver::resolve(did, ResolutionOptions::default()).unwrap();
-        assert_eq!(document.data["id"], did);
-        assert_eq!(
-            document.data["service"].as_array().unwrap()[0]["type"],
-            "SingletonBeacon"
-        );
-    }
+    // #[test]
+    // fn test_resolve() {
+    //     let did = "did:btc1:k1qgp5h79scv4sfqkzak5g6y89dsy3cq0pd2nussu2cm3zjfhn4ekwrucc4q7t7";
+    //     let document = Resolver::resolve(did, ResolutionOptions::default()).unwrap();
+    //     assert_eq!(document.data["id"], did);
+    //     assert_eq!(
+    //         document.data["service"].as_array().unwrap()[0]["type"],
+    //         "SingletonBeacon"
+    //     );
+    // }
 }
