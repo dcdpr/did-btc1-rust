@@ -135,29 +135,9 @@ dependencies = [
 [[package]]
 name = "did-btc1"
 version = "0.1.0"
-
-[[package]]
-name = "did-btc1-beacons"
-version = "0.1.0"
-
-[[package]]
-name = "did-btc1-bitcoin"
-version = "0.1.0"
-
-[[package]]
-name = "did-btc1-cli"
-version = "0.1.0"
-
-[[package]]
-name = "did-btc1-core"
-version = "0.1.0"
-
-[[package]]
-name = "did-btc1-crypto"
-version = "0.1.0"
 dependencies = [
  "base58",
- "did-btc1-identifier",
+ "bech32-rust",
  "hex",
  "json-patch",
  "multibase",
@@ -171,29 +151,6 @@ dependencies = [
  "tempfile",
  "urlencoding",
  "uuid",
-]
-
-[[package]]
-name = "did-btc1-examples"
-version = "0.1.0"
-
-[[package]]
-name = "did-btc1-identifier"
-version = "0.1.0"
-dependencies = [
- "bech32-rust",
- "onlyerror",
- "serde",
-]
-
-[[package]]
-name = "did-btc1-resolver"
-version = "0.1.0"
-dependencies = [
- "did-btc1-crypto",
- "did-btc1-identifier",
- "onlyerror",
- "serde_json",
 ]
 
 [[package]]

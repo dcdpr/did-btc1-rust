@@ -1,16 +1,34 @@
+[package]
+name = "did-btc1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Implementation of DID:BTC1"
+
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+onlyerror.workspace = true
+secp256k1.workspace = true
+sha2.workspace = true
+multibase.workspace = true
+serde_jcs.workspace = true
+bech32-rust = { path = "../bech32-rust" }
+json-patch = "1.0"
+uuid = { version = "1.0", features = ["v4"] }
+base58 = "0.2"
+hex = "0.4.3"
+rand = "0.8"
+urlencoding = "2.1"
+
+[dev-dependencies]
+tempfile = "3.8"
+
+
+
 [workspace]
 resolver = "2"
-members = [
-    "did-btc1-core",
-    "did-btc1-crypto",
-    "did-btc1-identifier",
-    "did-btc1-beacons",
-    "did-btc1-bitcoin",
-    "did-btc1-resolver",
-    "did-btc1",
-    "did-btc1-cli",
-    "did-btc1-examples",
-]
 
 [workspace.package]
 version = "0.1.0"
@@ -37,10 +55,3 @@ bitcoin = "0.32"
 # JSON processing
 serde_jcs = "0.1"
 
-# Internal workspace crates
-did-btc1-core = { path = "./did-btc1-core" }
-did-btc1-crypto = { path = "./did-btc1-crypto" }
-did-btc1-identifier = { path = "./did-btc1-identifier" }
-did-btc1-beacons = { path = "./did-btc1-beacons" }
-did-btc1-bitcoin = { path = "./did-btc1-bitcoin" }
-did-btc1-resolver = { path = "./did-btc1-resolver" }
