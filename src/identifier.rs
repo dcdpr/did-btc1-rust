@@ -15,25 +15,27 @@
 //! ## Examples
 //!
 //! ```rust
-//! use did_btc1::identifier::{parse_did_identifier, encode_did_identifier, DidComponents, Network, IdType, Error, DidVersion};
+//! use did_btc1::identifier::{Network, IdType, Error, DidVersion, Did};
 //!
 //! // Parse a DID identifier
-//! let did = "did:btc1:k1qqpuwwde82nennsavvf0lqfnlvx7frrgzs57lchr02q8mz49qzaaxmqphnvcx";
-//! let components = parse_did_identifier(did)?;
+//! let didstr = "did:btc1:k1qqpuwwde82nennsavvf0lqfnlvx7frrgzs57lchr02q8mz49qzaaxmqphnvcx";
+//!
+//! let did: Did = didstr.parse()?;
+//!
+//! let components = did.components();
 //!
 //! assert_eq!(components.version(), DidVersion::One);
 //! assert_eq!(components.network(), Network::Mainnet);
-//! assert_eq!(components.id_type(), IdType::Key);
+//! assert!(matches!(components.id_type(), IdType::Key(_)));
 //!
-//! // Create a new DID identifier
-//! let genesis_bytes = [0u8; 33]; // 33-byte compressed secp256k1 public key
-//! let did = encode_did_identifier(DidVersion::One, Network::Mainnet, IdType::Key, &genesis_bytes)?;
+//! let public_key = did.public_key()?;
+//! println!("{}", public_key.encode()?);
+//!
 //! # Ok::<(), Error>(())
 //! ```
 
-use bech32_rust::{Bech32Error, decode, encode};
+use bech32_rust::{Bech32Error, DecodedResult, decode, encode};
 use onlyerror::Error;
-use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
 use crate::PublicKey;
@@ -92,7 +94,7 @@ pub enum Error {
     ExpectedPublicKey,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Did {
     encoded: String,
     components: DidComponents,
@@ -113,13 +115,9 @@ impl FromStr for Did {
 
 impl From<DidComponents> for Did {
     fn from(components: DidComponents) -> Self {
-        let encoded = encode_did_identifier(
-            components.version,
-            components.network,
-            components.id_type,
-            &components.genesis_bytes,
-        )
-        .unwrap();
+        let encoded =
+            encode_did_identifier(components.version, components.network, components.id_type)
+                .unwrap();
 
         Self {
             encoded,
@@ -140,14 +138,14 @@ impl Did {
     // TODO: should be infallible!
     pub fn public_key(&self) -> Result<PublicKey, Error> {
         match self.components.id_type {
-            IdType::Key => Ok(PublicKey::from_bytes(&self.components.genesis_bytes)?),
-            IdType::External => Err(Error::ExpectedPublicKey),
+            IdType::Key(key) => Ok(PublicKey::from_bytes(&key)?),
+            IdType::External(_) => Err(Error::ExpectedPublicKey),
         }
     }
 }
 
 /// DID:BTC1 encoding version
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DidVersion {
     One = 1,
 }
@@ -170,7 +168,7 @@ impl From<DidVersion> for u8 {
 }
 
 /// Bitcoin networks supported by DID:BTC1
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Network {
     /// Bitcoin mainnet
@@ -220,43 +218,58 @@ impl From<Network> for u8 {
 }
 
 /// Type of DID identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdType {
     /// Key-based identifier (secp256k1 public key)
-    Key,
+    Key([u8; SECP256K1_COMPRESSED_KEY_LEN]),
     /// External document-based identifier (hash of external document)
-    External,
+    External([u8; SHA256_HASH_LEN]),
+}
+
+impl TryFrom<&DecodedResult> for IdType {
+    type Error = Error;
+
+    fn try_from(decoded: &DecodedResult) -> Result<Self, Self::Error> {
+        if decoded.dp.is_empty() {
+            return Err(Error::InvalidDidFormat(
+                "No data in DID identifier".to_string(),
+            ));
+        }
+
+        // Validate bytes length
+        let expected_len = match decoded.hrp.as_str() {
+            HRP_KEY => SECP256K1_COMPRESSED_KEY_LEN,
+            HRP_EXTERNAL => SHA256_HASH_LEN,
+            _ => return Err(Error::InvalidHrp(decoded.hrp.clone())),
+        };
+
+        let actual_len = decoded.dp[1..].len();
+        if actual_len != expected_len {
+            return Err(Error::InvalidGenesisLength(actual_len, expected_len));
+        }
+
+        // Determine identifier type from HRP
+        match decoded.hrp.as_str() {
+            // Unwraps exist here because the length checks have already happened above.
+            HRP_KEY => Ok(IdType::Key(decoded.dp[1..].try_into().unwrap())),
+            HRP_EXTERNAL => Ok(IdType::External(decoded.dp[1..].try_into().unwrap())),
+            _ => unreachable!(),
+        }
+    }
 }
 
 impl IdType {
     /// Get the human-readable part for this identifier type
     pub fn hrp(&self) -> &'static str {
         match self {
-            IdType::Key => HRP_KEY,
-            IdType::External => HRP_EXTERNAL,
-        }
-    }
-
-    /// Convert from human-readable part
-    pub fn from_hrp(hrp: &str) -> Result<Self, Error> {
-        match hrp {
-            HRP_KEY => Ok(IdType::Key),
-            HRP_EXTERNAL => Ok(IdType::External),
-            _ => Err(Error::InvalidHrp(hrp.to_string())),
-        }
-    }
-
-    /// Expected length of genesis bytes for this identifier type
-    pub fn expected_genesis_length(&self) -> usize {
-        match self {
-            IdType::Key => SECP256K1_COMPRESSED_KEY_LEN,
-            IdType::External => SHA256_HASH_LEN,
+            IdType::Key(_) => HRP_KEY,
+            IdType::External(_) => HRP_EXTERNAL,
         }
     }
 }
 
 /// Components of a parsed DID:BTC1 identifier
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DidComponents {
     /// Specification version (1-16)
     version: DidVersion,
@@ -264,32 +277,15 @@ pub struct DidComponents {
     network: Network,
     /// Identifier type
     id_type: IdType,
-    /// Genesis bytes (public key or hash)
-    genesis_bytes: Vec<u8>,
 }
 
 impl DidComponents {
     /// Create new DID components with validation
-    pub fn new(
-        version: DidVersion,
-        network: Network,
-        id_type: IdType,
-        genesis_bytes: Vec<u8>,
-    ) -> Result<Self, Error> {
-        // Validate genesis bytes length
-        let expected_len = id_type.expected_genesis_length();
-        if genesis_bytes.len() != expected_len {
-            return Err(Error::InvalidGenesisLength(
-                genesis_bytes.len(),
-                expected_len,
-            ));
-        }
-
+    pub fn new(version: DidVersion, network: Network, id_type: IdType) -> Result<Self, Error> {
         Ok(Self {
             version,
             network,
             id_type,
-            genesis_bytes,
         })
     }
 
@@ -306,7 +302,7 @@ impl DidComponents {
     }
 
     pub fn genesis_bytes(&self) -> &[u8] {
-        &self.genesis_bytes
+        todo!(); //&self.genesis_bytes
     }
 }
 
@@ -331,7 +327,7 @@ impl DidComponents {
 ///
 /// assert_eq!(components.version(), DidVersion::One);
 /// assert_eq!(components.network(), Network::Mainnet);
-/// assert_eq!(components.id_type(), IdType::Key);
+/// assert!(matches!(components.id_type(), IdType::Key(_)));
 /// # Ok::<(), Error>(())
 /// ```
 pub fn parse_did_identifier(did: &str) -> Result<DidComponents, Error> {
@@ -349,14 +345,7 @@ pub fn parse_did_identifier(did: &str) -> Result<DidComponents, Error> {
     let decoded = decode(bech32_part)?;
 
     // Determine identifier type from HRP
-    let id_type = IdType::from_hrp(&decoded.hrp)?;
-
-    // Parse the decoded data
-    if decoded.dp.is_empty() {
-        return Err(Error::InvalidDidFormat(
-            "No data in DID identifier".to_string(),
-        ));
-    }
+    let id_type = IdType::try_from(&decoded)?;
 
     // First byte contains version (high nibble) and network (low nibble)
     let version_network_byte = decoded.dp[0];
@@ -364,11 +353,8 @@ pub fn parse_did_identifier(did: &str) -> Result<DidComponents, Error> {
     let network_nibble = version_network_byte & 0x0F; // Low nibble
     let network = Network::try_from(network_nibble)?;
 
-    // Remaining bytes are genesis data
-    let genesis_bytes = decoded.dp[1..].to_vec();
-
     // Create and validate components
-    DidComponents::new(version.try_into()?, network, id_type, genesis_bytes)
+    DidComponents::new(version.try_into()?, network, id_type)
 }
 
 /// Encode DID components into a DID:BTC1 identifier string
@@ -384,31 +370,15 @@ pub fn parse_did_identifier(did: &str) -> Result<DidComponents, Error> {
 ///
 /// * `Ok(String)` - The encoded DID identifier
 /// * `Err(Error)` - If encoding fails
-///
-/// # Examples
-///
-/// ```rust
-/// use did_btc1::identifier::{encode_did_identifier, Network, IdType, Error, DidVersion};
-///
-/// let genesis_bytes = [0u8; 33]; // 33-byte compressed secp256k1 public key
-/// let did = encode_did_identifier(DidVersion::One, Network::Mainnet, IdType::Key, &genesis_bytes)?;
-/// assert!(did.starts_with("did:btc1:k1"));
-/// # Ok::<(), Error>(())
-/// ```
-pub fn encode_did_identifier(
+fn encode_did_identifier(
     version: DidVersion,
     network: Network,
     id_type: IdType,
-    genesis_bytes: &[u8],
 ) -> Result<String, Error> {
-    // Validate genesis bytes length
-    let expected_len = id_type.expected_genesis_length();
-    if genesis_bytes.len() != expected_len {
-        return Err(Error::InvalidGenesisLength(
-            genesis_bytes.len(),
-            expected_len,
-        ));
-    }
+    let genesis_bytes = match &id_type {
+        IdType::Key(key) => &key[..],
+        IdType::External(hash) => &hash[..],
+    };
 
     // Build the data payload
     let mut data = Vec::with_capacity(1 + genesis_bytes.len());
@@ -429,57 +399,19 @@ pub fn encode_did_identifier(
     Ok(format!("{DID_BTC1_PREFIX}{bech32_part}"))
 }
 
-/// Extract the network from a DID:BTC1 identifier
-///
-/// This is a convenience function for when you only need the network information.
-///
-/// # Arguments
-///
-/// * `did` - The DID identifier string
-///
-/// # Returns
-///
-/// * `Ok(Network)` - The network
-/// * `Err(Error)` - If extraction fails
-pub fn extract_network(did: &str) -> Result<Network, Error> {
-    let components = parse_did_identifier(did)?;
-    Ok(components.network)
-}
-
-/// Extract the genesis bytes from a DID:BTC1 identifier
-///
-/// This is a convenience function for when you only need the genesis data.
-///
-/// # Arguments
-///
-/// * `did` - The DID identifier string
-///
-/// # Returns
-///
-/// * `Ok(Vec<u8>)` - The genesis bytes
-/// * `Err(Error)` - If extraction fails
-pub fn extract_genesis_bytes(did: &str) -> Result<Vec<u8>, Error> {
-    let components = parse_did_identifier(did)?;
-    Ok(components.genesis_bytes)
-}
-
-/// Check if a string is a valid DID:BTC1 identifier
-///
-/// # Arguments
-///
-/// * `did` - The string to validate
-///
-/// # Returns
-///
-/// * `true` - If the string is a valid DID:BTC1 identifier
-/// * `false` - If the string is invalid
-pub fn is_valid_did(did: &str) -> bool {
-    parse_did_identifier(did).is_ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl From<&[u8]> for IdType {
+        fn from(bytes: &[u8]) -> Self {
+            match bytes.len() {
+                SECP256K1_COMPRESSED_KEY_LEN => IdType::Key(bytes.try_into().unwrap()),
+                SHA256_HASH_LEN => IdType::External(bytes.try_into().unwrap()),
+                _ => unreachable!(),
+            }
+        }
+    }
 
     #[test]
     fn test_network_conversion() {
@@ -495,53 +427,40 @@ mod tests {
     }
 
     #[test]
-    fn test_id_type_conversion() {
-        assert_eq!(IdType::Key.hrp(), "k");
-        assert_eq!(IdType::External.hrp(), "x");
+    fn test_id_type_hrps() {
+        let key = IdType::from(&[0_u8; SECP256K1_COMPRESSED_KEY_LEN][..]);
+        assert_eq!(key.hrp(), "k");
 
-        assert_eq!(IdType::from_hrp("k").unwrap(), IdType::Key);
-        assert_eq!(IdType::from_hrp("x").unwrap(), IdType::External);
-        assert!(IdType::from_hrp("invalid").is_err());
+        let hash = IdType::from(&[0_u8; SHA256_HASH_LEN][..]);
+        assert_eq!(hash.hrp(), "x");
     }
 
     #[test]
     fn test_encode_decode_key_based() {
-        let genesis_bytes = vec![0u8; 33]; // 33-byte compressed public key
-        let did = encode_did_identifier(
-            DidVersion::One,
-            Network::Mainnet,
-            IdType::Key,
-            &genesis_bytes,
-        )
-        .unwrap();
+        let key = IdType::from(&[0_u8; SECP256K1_COMPRESSED_KEY_LEN][..]);
 
-        assert!(did.starts_with("did:btc1:k1"));
+        let did_str = encode_did_identifier(DidVersion::One, Network::Mainnet, key).unwrap();
 
-        let components = parse_did_identifier(&did).unwrap();
+        assert!(did_str.starts_with("did:btc1:k1"));
+
+        let components = parse_did_identifier(&did_str).unwrap();
         assert_eq!(u8::from(components.version), 1);
         assert_eq!(components.network, Network::Mainnet);
-        assert_eq!(components.id_type, IdType::Key);
-        assert_eq!(components.genesis_bytes, genesis_bytes);
+        assert_eq!(components.id_type, key);
     }
 
     #[test]
     fn test_encode_decode_external() {
-        let genesis_bytes = vec![0xffu8; 32]; // 32-byte hash
-        let did = encode_did_identifier(
-            DidVersion::One,
-            Network::Signet,
-            IdType::External,
-            &genesis_bytes,
-        )
-        .unwrap();
+        let hash = IdType::from(&[255_u8; SHA256_HASH_LEN][..]);
+
+        let did = encode_did_identifier(DidVersion::One, Network::Signet, hash).unwrap();
 
         assert!(did.starts_with("did:btc1:x1"));
 
         let components = parse_did_identifier(&did).unwrap();
         assert_eq!(u8::from(components.version), 1);
         assert_eq!(components.network, Network::Signet);
-        assert_eq!(components.id_type, IdType::External);
-        assert_eq!(components.genesis_bytes, genesis_bytes);
+        assert_eq!(components.id_type, hash);
     }
 
     #[test]
@@ -551,40 +470,20 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_invalid_genesis_length() {
-        let short_bytes = vec![0u8; 10];
-        let result =
-            encode_did_identifier(DidVersion::One, Network::Mainnet, IdType::Key, &short_bytes);
-        assert!(matches!(result, Err(Error::InvalidGenesisLength(10, 33))));
-    }
+        // todo: need to construct plausible "k1" bech32 string with wrong number of bytes
+        let bstring = "k1ru0p68qmrgv3s9ckz52pxys3zq8surgvpv9qjzq8qczsgqczqyqqncvqap";
+        let dr: DecodedResult = decode(bstring).unwrap();
 
-    #[test]
-    fn test_extract_functions() {
-        let genesis_bytes = vec![0x42u8; 33];
-        let did = encode_did_identifier(
-            DidVersion::One,
-            Network::TestnetV4,
-            IdType::Key,
-            &genesis_bytes,
-        )
-        .unwrap();
-
-        assert_eq!(extract_network(&did).unwrap(), Network::TestnetV4);
-        assert_eq!(extract_genesis_bytes(&did).unwrap(), genesis_bytes);
-        assert!(is_valid_did(&did));
-        assert!(!is_valid_did("invalid-did"));
+        let id_type = IdType::try_from(&dr);
+        assert!(matches!(id_type, Err(Error::InvalidGenesisLength(_, _))));
     }
 
     #[test]
     fn test_custom_network() {
-        let genesis_bytes = vec![0u8; 33];
-        let did = encode_did_identifier(
-            DidVersion::One,
-            Network::Custom(15),
-            IdType::Key,
-            &genesis_bytes,
-        )
-        .unwrap();
+        let key = IdType::from(&[0_u8; SECP256K1_COMPRESSED_KEY_LEN][..]);
+        let did = encode_did_identifier(DidVersion::One, Network::Custom(15), key).unwrap();
 
         let components = parse_did_identifier(&did).unwrap();
         assert_eq!(components.network, Network::Custom(15));

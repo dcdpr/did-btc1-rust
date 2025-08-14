@@ -1,30 +1,27 @@
 use crate::{identifier::Did, key::PublicKey};
-use serde::{Deserialize, Serialize};
-use std::{cmp::PartialEq, str::FromStr};
 use onlyerror::Error;
+use std::{cmp::PartialEq, str::FromStr};
 
 #[derive(Error, Debug)]
 pub enum Error {
     /// Unsupported verification method type
     UnsupportedVerificationMethod,
-
 }
 
 /// Verification method types
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerificationMethodType {
     /// Multikey verification method
     Multikey,
+
     /// Other types
-    #[serde(other)]
     Other,
 }
 
 /// Verification method ID
 ///
 /// These look like DIDs with a `#fragment`. Used to identify [`VerificationMethod`]s.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerificationMethodId(String);
 
 impl FromStr for VerificationMethodId {
@@ -36,14 +33,12 @@ impl FromStr for VerificationMethodId {
 }
 
 /// Represents a verification method for cryptographic proofs
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct VerificationMethod {
     /// Identifier for the verification method
     pub id: VerificationMethodId,
 
     /// Type of verification method
-    #[serde(rename = "type")]
     pub type_: VerificationMethodType,
 
     /// The controller of this verification method

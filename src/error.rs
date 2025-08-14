@@ -10,7 +10,6 @@ pub enum Error {
     // /// Error parsing JSON document
     // #[error("JSON parse error")]
     // JsonParse(#[from] serde_json::Error),
-
     /// Error converting JSON Value to str
     #[error("Value can't be converted to str for key `{0}`")]
     JsonValueStr(String),
@@ -48,7 +47,6 @@ pub enum Error {
     /// Generic error
     #[error("{0}")]
     Other(String),
-
     // /// DID Encoding error
     // #[error("DID Encoding error")]
     // DidEncoding(#[from] crate::identifier::Error),

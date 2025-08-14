@@ -1,15 +1,18 @@
-use crate::identifier::{Did, DidComponents, DidVersion, Network};
+use crate::identifier::{Did, DidVersion, IdType, Network};
 use crate::service::Service;
 use crate::verification::{VerificationMethod, VerificationMethodId};
 use crate::{key::PublicKey, proof::Proof, verification};
 use onlyerror::Error;
 use serde::de::Error as SerdeError;
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{fs, path::Path, str::FromStr};
+use sha2::{Digest, Sha256};
 
 const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
 const DID_BTC1_CONTEXT: &str = "https://did-btc1/TBD/context";
+
+const DID_PLACEHOLDER: &str =
+    "did:btc1:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -34,9 +37,7 @@ pub enum Error {
 
     /// DID Encoding error
     DidEncoding(#[from] crate::identifier::Error),
-    // /// Error with multibase encoding/decoding
-    // #[error("Multibase error: {0}")]
-    // Multibase(String),
+
     /// Verification Error
     Verification(#[from] verification::Error),
 
@@ -46,7 +47,7 @@ pub enum Error {
 }
 
 /// Represents a JSON or JSON-LD document
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Document {
     /// DID identifier
     id: Did,
@@ -67,27 +68,39 @@ pub struct Document {
     service: Vec<Service>,
 
     /// The document data as a JSON Value
-    #[serde(flatten)]
     data: Map<String, Value>,
 }
 
-// Placeholders
-pub struct ResolutionOptions;
-pub struct DocumentPatch;
+#[derive(Debug, Default)]
+pub struct ResolutionOptions {
+    /// The Media Type of the caller's preferred representation of the DID document
+    accept: Option<String>,
 
-impl From<()> for ResolutionOptions {
-    fn from(_: ()) -> Self {
-        ResolutionOptions
-    }
+    /// Flag which instructs a DID resolver to expand relative DID URLs
+    expand_relative_urls: bool,
+
+    /// The version of the identifier and/or DID document
+    version_id: Option<String>,
+
+    /// A timestamp used during resolution as a bound for when to stop resolving
+    version_time: Option<String>, // TODO: Use chrono? UTCDateTime
+
+    /// Data necessary for resolving a DID such as DID Update Payloads and SMT proofs
+    sidecar_data: Option<SidecarData>,
+
+    /// The bitcoin network used for resolution
+    network: Option<Network>,
 }
 
-impl Document {
-    // Spec section 4.1.1
-    /// Create a document from an existing DID.
-    pub fn from_did(_did: Did) -> Result<Self, Error> {
-        todo!()
-    }
+#[derive(Debug, Default)]
+pub struct SidecarData {
+    initial_document: Option<InitialDocument>,
+}
 
+// Placeholders
+pub struct DocumentPatch;
+
+impl Document {
     // Spec section 4.1.2
     /// Create a document from an initial JSON document that has been prepared externally.
     pub fn from_initial(
@@ -242,6 +255,7 @@ impl Document {
                 service,
                 data: map,
             }),
+            // TODO: Use a new error variant?
             _ => Err(Error::JsonParse(serde_json::Error::custom(
                 "Document root must be a JSON object",
             ))),
@@ -290,32 +304,126 @@ impl Document {
 
         Ok(doc)
     }
+}
 
-    // TODO: This could be used for Spec section 4.1
-    #[allow(dead_code)]
-    fn deterministically_generate_initial_did_document(
-        did: &str,
-        did_components: &DidComponents,
-    ) -> Result<Document, Error> {
-        let key_bytes = &did_components.genesis_bytes();
-        let verification_method_id = format!("{did}#initialKey");
+#[derive(Clone, Debug)]
+pub struct InitialDocument {
+    json_data: Value,
+}
+
+impl InitialDocument {
+    // Spec section 4.2.1
+    /// Create an initial document from an existing DID.
+    pub fn from_did(did: &Did, resolution_options: &ResolutionOptions) -> Result<Self, Error> {
+        match did.components().id_type() {
+            IdType::Key(_) => Self::deterministically_generate(did),
+            IdType::External(_) => Self::resolve_external(did, resolution_options),
+        }
+    }
+
+    // Spec section 4.2.1.1
+    fn deterministically_generate(did: &Did) -> Result<Self, Error> {
+        // TODO: Should we assert that `did.id_type` is `IdType::Key`?
+        let verification_method_id = format!("{}#initialKey", did.encode());
         let verification_method_ids = json!([verification_method_id]);
 
-        Self::from_json_value(json!({
-            "id": did,
-            "@context": [DID_CORE_V1_1_CONTEXT, DID_BTC1_CONTEXT],
-            "verificationMethod": [{
-                "id": verification_method_id,
-                "type": "MultiKey",
-                "controller": did,
-                "publicKeyMultibase": PublicKey::from_bytes(key_bytes)?.encode()?,
-            }],
-            "authentication": verification_method_ids,
-            "assertionMethod": verification_method_ids,
-            "capabilityInvocation": verification_method_ids,
-            "capabilityDelegation": verification_method_ids,
-        }))
+        Ok(Self {
+            json_data: json!({
+                "id": did.encode(),
+                "@context": [DID_CORE_V1_1_CONTEXT, DID_BTC1_CONTEXT],
+                "verificationMethod": [{
+                    "id": verification_method_id,
+                    "type": "MultiKey",
+                    "controller": did.encode(),
+                    "publicKeyMultibase": did.public_key()?.encode()?,
+                }],
+                "authentication": verification_method_ids,
+                "assertionMethod": verification_method_ids,
+                "capabilityInvocation": verification_method_ids,
+                "capabilityDelegation": verification_method_ids,
+                "service": generate_beacon_services(did),
+            }),
+        })
     }
+
+    // Spec section 4.2.1.2
+    fn resolve_external(did: &Did, resolution_options: &ResolutionOptions) -> Result<Self, Error> {
+        // Step 1
+        let doc = resolution_options
+            .sidecar_data
+            .as_ref()
+            .and_then(|data| {
+                data.initial_document
+                    .as_ref()
+                    .map(|doc| doc.clone().sidecar_initial_validation(did))
+            })
+            .unwrap_or_else(|| todo!("Sans I/O CAS retrieval"));
+
+        todo!()
+    }
+
+    // Spec section 4.2.1.2.1
+    fn sidecar_initial_validation(mut self, did: &Did) -> Result<Self, Error> {
+        // TODO: Find and replace all DIDs with the xxxxx string...
+
+        fn traverse(value: &mut Value, encoded: &str) {
+            match value {
+                Value::String(s) => {
+                    if s.starts_with(encoded) {
+                        *s = DID_PLACEHOLDER.to_string();
+                    }
+                }
+                Value::Array(array) => {
+                    for item in array {
+                        traverse(item, encoded);
+                    }
+                }
+                Value::Object(obj) => {
+                    for (_, value) in obj {
+                        traverse(value, encoded);
+                    }
+                }
+                _ => (),
+            }
+        }
+
+        traverse(&mut self.json_data, did.encode());
+
+        // TODO: How to canonicalize the JSON doc to get a hash?
+
+        let hash_bytes = Sha256::digest(b"todo: get doc as a big string");
+        let IdType::External(hash) = did.components().id_type() else {
+            return Err(todo!());
+        };
+        // todo: compare the hash
+        
+        Ok(self)
+    }
+}
+
+// Spec section 4.2.1.1.1
+fn generate_beacon_services(did: &Did) -> Value {
+    let p2pkh_beacon = "TODO: Create P2PKH address from wallet";
+    let p2wpkh_beacon = "TODO: Create P2WPKH address from wallet";
+    let p2tr_beacon = "TODO: Create P2TR address from wallet";
+
+    json!([
+        {
+            "id": format!("{}#initialP2PKH", did.encode()),
+            "type": "SingletonBeacon",
+            "serviceEndpoint": p2pkh_beacon,
+        },
+        {
+            "id": format!("{}#initialP2WPKH", did.encode()),
+            "type": "SingletonBeacon",
+            "serviceEndpoint": p2wpkh_beacon,
+        },
+        {
+            "id": format!("{}#initialP2TR", did.encode()),
+            "type": "SingletonBeacon",
+            "serviceEndpoint": p2tr_beacon,
+        },
+    ])
 }
 
 #[cfg(test)]

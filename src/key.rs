@@ -1,7 +1,6 @@
 use base58::ToBase58;
 use onlyerror::Error;
 use secp256k1::{Secp256k1, SecretKey as SecpSecretKey, XOnlyPublicKey};
-use serde::{Deserialize, Serialize, de::Visitor};
 use std::fmt;
 
 #[derive(Error, Debug)]
@@ -26,15 +25,15 @@ pub enum Error {
 #[derive(Clone)]
 pub struct PublicKey {
     /// The x-only public key for secp256k1
-    pub key: XOnlyPublicKey,
+    key: XOnlyPublicKey,
 }
 
 impl PublicKey {
     /// Create a new public key from bytes
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         let x_only_bytes = &bytes[1..]; // Skip the first parity byte
-        let key = XOnlyPublicKey::from_slice(x_only_bytes)
-            .map_err(|err| Error::InvalidBytesForPublicKey(err))?;
+        let key =
+            XOnlyPublicKey::from_slice(x_only_bytes).map_err(Error::InvalidBytesForPublicKey)?;
         Ok(Self { key })
     }
 
@@ -81,53 +80,6 @@ impl PublicKey {
         Ok(format!("z{encoded}"))
     }
 }
-
-impl Serialize for PublicKey {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(
-            &self
-                .encode()
-                .map_err(|err| serde::ser::Error::custom(err))?,
-        )
-    }
-}
-
-struct PublicKeyVisitor;
-
-impl<'de> Visitor<'de> for PublicKeyVisitor {
-    type Value = PublicKey;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "a multibase encoded secp256k1 public key")
-    }
-
-    fn visit_bytes<E>(self, bytes: &[u8]) -> std::result::Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        PublicKey::from_bytes(bytes).map_err(|err| serde::de::Error::custom(err))
-    }
-
-    fn visit_str<E>(self, multikey: &str) -> std::result::Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        PublicKey::from_multikey(multikey).map_err(|err| serde::de::Error::custom(err))
-    }
-}
-
-impl<'de> Deserialize<'de> for PublicKey {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_str(PublicKeyVisitor)
-    }
-}
-
 impl fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.encode() {
@@ -147,8 +99,7 @@ pub struct SecretKey {
 impl SecretKey {
     /// Create a new secret key from bytes
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        let key =
-            SecpSecretKey::from_slice(bytes).map_err(|err| Error::InvalidBytesForSecretKey(err))?;
+        let key = SecpSecretKey::from_slice(bytes).map_err(Error::InvalidBytesForSecretKey)?;
         Ok(Self { key })
     }
 

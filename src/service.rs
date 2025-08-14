@@ -1,5 +1,4 @@
 use onlyerror::Error;
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum Error {
@@ -10,7 +9,7 @@ pub enum Error {
     MissingServiceEndpointAttribute,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Service {
     id: Option<String>,
     ty: Vec<String>,
