@@ -1,4 +1,5 @@
 use onlyerror::Error;
+use serde_json::{Value, json};
 use std::io;
 
 #[derive(Error, Debug)]
@@ -7,16 +8,10 @@ pub enum Error {
     #[error("Document I/O error")]
     DocumentIO(#[from] io::Error),
 
-    // /// Error parsing JSON document
-    // #[error("JSON parse error")]
-    // JsonParse(#[from] serde_json::Error),
     /// Error converting JSON Value to str
     #[error("Value can't be converted to str for key `{0}`")]
     JsonValueStr(String),
 
-    // /// Expected JSON string
-    // #[error("Expected JSON string")]
-    // ExpectedJsonStr,
     /// Error with key operations
     Key(#[from] crate::key::Error),
 
@@ -47,13 +42,63 @@ pub enum Error {
     /// Generic error
     #[error("{0}")]
     Other(String),
-    // /// DID Encoding error
-    // #[error("DID Encoding error")]
-    // DidEncoding(#[from] crate::identifier::Error),
-    // /// Document service endpoints error
-    // #[error("Document service endpoints error")]
-    // Service(#[from] crate::service::Error),
 }
 
 /// Result type for this crate
 pub type Result<T> = std::result::Result<T, Error>;
+
+// Errors defined by the DID:BTC1 specification and other related specifications.
+
+pub trait ProblemDetails {
+    fn details(&self) -> Option<Value> {
+        None
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum Btc1Error {
+    // Errors from DID Resolution Spec
+    /// An invalid DID was detected during DID Resolution.
+    InvalidDid(String),
+
+    /// The DID document was malformed.
+    InvalidDidDocument(String),
+
+    // Errors from DID BTC1 Spec
+    /// Sidecar data was invalid
+    InvalidSidecarData(String),
+
+    /// Update payload was published late
+    LatePublishingError(String),
+}
+
+impl ProblemDetails for Btc1Error {
+    fn details(&self) -> Option<Value> {
+        let prefix = match self {
+            Self::InvalidDid(_) | Self::InvalidDidDocument(_) => "https://www.w3.org/ns/did",
+            // TODO: Is this the right error namespace?
+            // From: https://github.com/dcdpr/did-btc1/issues/71#issuecomment-3179550385
+            Self::InvalidSidecarData(_) | Self::LatePublishingError(_) => {
+                "https://btc1.dev/context/v1"
+            }
+        };
+
+        let name = match self {
+            Self::InvalidDid(_) => "INVALID_DID",
+            Self::InvalidDidDocument(_) => "INVALID_DID_DOCUMENT",
+            Self::InvalidSidecarData(_) => "INVALID_SIDECAR_DATA",
+            Self::LatePublishingError(_) => "LATE_PUBLISHING_ERROR",
+        };
+
+        Some(json!({
+            "type": format!("{prefix}#{name}"),
+            "title": self.to_string(),
+            "detail": match self {
+                Self::InvalidDid(detail) => detail,
+                Self::InvalidDidDocument(detail) => detail,
+                Self::InvalidSidecarData(detail) => detail,
+                Self::LatePublishingError(detail) => detail,
+            },
+        }))
+    }
+}

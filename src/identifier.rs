@@ -28,8 +28,9 @@
 //! assert_eq!(components.network(), Network::Mainnet);
 //! assert!(matches!(components.id_type(), IdType::Key(_)));
 //!
-//! let public_key = did.public_key()?;
-//! println!("{}", public_key.encode()?);
+//! if let Some(public_key) = did.public_key() {
+//!     println!("{}", public_key.encode());
+//! }
 //!
 //! # Ok::<(), Error>(())
 //! ```
@@ -88,10 +89,6 @@ pub enum Error {
 
     /// Error with key operations
     Key(#[from] crate::key::Error),
-
-    /// Expected public key hash
-    #[error("Expected public key hash")]
-    ExpectedPublicKey,
 }
 
 #[derive(Debug, Clone)]
@@ -135,11 +132,17 @@ impl Did {
         &self.components
     }
 
-    // TODO: should be infallible!
-    pub fn public_key(&self) -> Result<PublicKey, Error> {
+    pub fn public_key(&self) -> Option<PublicKey> {
         match self.components.id_type {
-            IdType::Key(key) => Ok(PublicKey::from_bytes(&key)?),
-            IdType::External(_) => Err(Error::ExpectedPublicKey),
+            IdType::Key(key) => PublicKey::from_bytes(&key).ok(),
+            IdType::External(_) => None,
+        }
+    }
+
+    pub(crate) fn public_key_unchecked(&self) -> PublicKey {
+        match self.components.id_type {
+            IdType::Key(key) => PublicKey::from_bytes(&key).unwrap(),
+            IdType::External(_) => unreachable!(),
         }
     }
 }

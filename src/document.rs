@@ -1,12 +1,12 @@
-use crate::identifier::{Did, DidVersion, IdType, Network};
-use crate::service::Service;
+use crate::error::{Btc1Error, ProblemDetails};
+use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network};
 use crate::verification::{VerificationMethod, VerificationMethodId};
-use crate::{key::PublicKey, proof::Proof, verification};
+use crate::{key::PublicKey, proof::Proof, service::Service, verification};
 use onlyerror::Error;
 use serde::de::Error as SerdeError;
 use serde_json::{Map, Value, json};
-use std::{fs, path::Path, str::FromStr};
 use sha2::{Digest, Sha256};
+use std::{fs, path::Path, str::FromStr};
 
 const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
 const DID_BTC1_CONTEXT: &str = "https://did-btc1/TBD/context";
@@ -44,6 +44,18 @@ pub enum Error {
     /// Document service endpoints error
     #[error("Document service endpoints error")]
     Service(#[from] crate::service::Error),
+
+    /// DID:BTC1 error
+    Btc1Error(#[from] crate::error::Btc1Error),
+}
+
+impl ProblemDetails for Error {
+    fn details(&self) -> Option<Value> {
+        match self {
+            Self::Btc1Error(err) => err.details(),
+            _ => None,
+        }
+    }
 }
 
 /// Represents a JSON or JSON-LD document
@@ -101,20 +113,18 @@ pub struct SidecarData {
 pub struct DocumentPatch;
 
 impl Document {
+    // Spec section 4.1.1
+    pub fn from_did_components(did_components: DidComponents) -> Result<(Did, Self), Error> {
+        todo!()
+    }
+
     // Spec section 4.1.2
     /// Create a document from an initial JSON document that has been prepared externally.
     pub fn from_initial(
-        // TODO: Arbitrary JSON is not a great interface, but it's better than pretending that the
-        // `Document` type should be representable in an incomplete (and essentially unusable) form.
-        // The alternative is taking a separate `InitialDocument` type that can at least pass the
-        // JSON sniff test and cannot be confused with a real `Document`.
-        //
-        // The `from_file()`, `from_json_string()`, and `from_json_value()` constructors would be
-        // moved to `InitialDocument`.
-        _doc: Value,
+        _doc: InitialDocument,
         _version: Option<DidVersion>,
         _network: Option<Network>,
-    ) -> Result<Self, Error> {
+    ) -> Result<(Did, Self), Error> {
         todo!()
     }
 
@@ -316,18 +326,17 @@ impl InitialDocument {
     /// Create an initial document from an existing DID.
     pub fn from_did(did: &Did, resolution_options: &ResolutionOptions) -> Result<Self, Error> {
         match did.components().id_type() {
-            IdType::Key(_) => Self::deterministically_generate(did),
+            IdType::Key(_) => Ok(Self::deterministically_generate(did)),
             IdType::External(_) => Self::resolve_external(did, resolution_options),
         }
     }
 
     // Spec section 4.2.1.1
-    fn deterministically_generate(did: &Did) -> Result<Self, Error> {
-        // TODO: Should we assert that `did.id_type` is `IdType::Key`?
+    fn deterministically_generate(did: &Did) -> Self {
         let verification_method_id = format!("{}#initialKey", did.encode());
         let verification_method_ids = json!([verification_method_id]);
 
-        Ok(Self {
+        Self {
             json_data: json!({
                 "id": did.encode(),
                 "@context": [DID_CORE_V1_1_CONTEXT, DID_BTC1_CONTEXT],
@@ -335,7 +344,7 @@ impl InitialDocument {
                     "id": verification_method_id,
                     "type": "MultiKey",
                     "controller": did.encode(),
-                    "publicKeyMultibase": did.public_key()?.encode()?,
+                    "publicKeyMultibase": did.public_key_unchecked().encode(),
                 }],
                 "authentication": verification_method_ids,
                 "assertionMethod": verification_method_ids,
@@ -343,61 +352,70 @@ impl InitialDocument {
                 "capabilityDelegation": verification_method_ids,
                 "service": generate_beacon_services(did),
             }),
-        })
+        }
     }
 
     // Spec section 4.2.1.2
     fn resolve_external(did: &Did, resolution_options: &ResolutionOptions) -> Result<Self, Error> {
         // Step 1
-        let doc = resolution_options
+        let initial_document = resolution_options
             .sidecar_data
             .as_ref()
             .and_then(|data| {
                 data.initial_document
                     .as_ref()
-                    .map(|doc| doc.clone().sidecar_initial_validation(did))
+                    .map(|doc| doc.sidecar_initial_validation(did))
             })
-            .unwrap_or_else(|| todo!("Sans I/O CAS retrieval"));
+            .unwrap_or_else(|| todo!("Sans I/O CAS retrieval"))?;
 
-        todo!()
+        // Step 3: Validate conformant DID document according to the DID Core 1.1 specification
+
+        // todo: call some simple validation function that checks for top-level "id" entry
+
+        Ok(initial_document)
     }
 
     // Spec section 4.2.1.2.1
-    fn sidecar_initial_validation(mut self, did: &Did) -> Result<Self, Error> {
-        // TODO: Find and replace all DIDs with the xxxxx string...
-
-        fn traverse(value: &mut Value, encoded: &str) {
+    fn sidecar_initial_validation(&self, did: &Did) -> Result<Self, Error> {
+        fn find_and_replace(value: &mut Value, encoded: &str) {
             match value {
                 Value::String(s) => {
-                    if s.starts_with(encoded) {
-                        *s = DID_PLACEHOLDER.to_string();
-                    }
+                    *s = s.replace(encoded, DID_PLACEHOLDER);
                 }
                 Value::Array(array) => {
                     for item in array {
-                        traverse(item, encoded);
+                        find_and_replace(item, encoded);
                     }
                 }
                 Value::Object(obj) => {
                     for (_, value) in obj {
-                        traverse(value, encoded);
+                        find_and_replace(value, encoded);
                     }
                 }
                 _ => (),
             }
         }
 
-        traverse(&mut self.json_data, did.encode());
+        // Find and replace all DIDs with the DID placeholder string.
+        let mut intermediate_doc = self.clone().json_data;
+        find_and_replace(&mut intermediate_doc, did.encode());
 
-        // TODO: How to canonicalize the JSON doc to get a hash?
+        // Canonicalize the JSON doc to get a hash
+        // todo: need to use RDFC canonicalization instead
+        let jcs = serde_jcs::to_string(&intermediate_doc).expect("JSON is always valid JCS");
+        let hash_bytes = Sha256::digest(jcs.as_bytes());
 
-        let hash_bytes = Sha256::digest(b"todo: get doc as a big string");
         let IdType::External(hash) = did.components().id_type() else {
-            return Err(todo!());
+            unreachable!();
         };
-        // todo: compare the hash
-        
-        Ok(self)
+
+        if hash[..] != hash_bytes[..] {
+            return Err(Btc1Error::InvalidDid(
+                "TODO: description for sidecar_initial_validation() hash mismatch".to_string(),
+            ))?;
+        }
+
+        Ok(self.clone())
     }
 }
 
@@ -439,5 +457,25 @@ mod tests {
 
         assert_eq!(doc.service.len(), 3);
         assert_eq!(doc.verification_method.len(), 1);
+    }
+
+    #[test]
+    fn test_sidecar_initial_validation() {
+        let json = fs::read_to_string(
+            "../did-btc1/TestVectors/regtest/x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf/initialDidDoc.json",
+        ).unwrap();
+        let resolution_options = ResolutionOptions {
+            sidecar_data: Some(SidecarData {
+                initial_document: Some(InitialDocument {
+                    json_data: json.parse().unwrap(),
+                }),
+            }),
+            ..Default::default()
+        };
+
+        let did = "did:btc1:x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf"
+            .parse()
+            .unwrap();
+        let initial_doc = InitialDocument::resolve_external(&did, &resolution_options).unwrap();
     }
 }

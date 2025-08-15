@@ -63,7 +63,7 @@ impl PublicKey {
     }
 
     /// Encode the public key in a specific format
-    pub fn encode(&self) -> Result<String, Error> {
+    pub fn encode(&self) -> String {
         // Serialize to bytes
         let key_bytes = self.key.serialize();
 
@@ -77,15 +77,13 @@ impl PublicKey {
         let encoded = data.to_base58();
 
         // Prepend 'z' for base58-btc
-        Ok(format!("z{encoded}"))
+        format!("z{encoded}")
     }
 }
 impl fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.encode() {
-            Ok(multikey) => write!(f, "PublicKey({multikey})"),
-            Err(_) => write!(f, "PublicKey(<invalid>)"),
-        }
+        let multikey = self.encode();
+        write!(f, "PublicKey({multikey})")
     }
 }
 

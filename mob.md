@@ -43,3 +43,14 @@ for next time:
 - continue with 4.2.2, Resolve Target Document
 
 
+2025-08-15
+
+- Refactor of error types (added `ProblemDetails` trait for DID specification errors)
+- Removed error handling from some infallible code paths
+- implemented the JSON hash function with JCS
+
+for next time:
+
+- Implement section 4.1.1
+- Implement section 4.1.2
+
