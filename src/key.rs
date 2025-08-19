@@ -1,7 +1,7 @@
 use base58::ToBase58;
 use onlyerror::Error;
-use secp256k1::{Secp256k1, SecretKey as SecpSecretKey, XOnlyPublicKey};
-use std::fmt;
+use secp256k1::Secp256k1;
+pub use secp256k1::{PublicKey, SecretKey};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -21,29 +21,23 @@ pub enum Error {
     MultikeyPrefix,
 }
 
-/// Represents a public key
-#[derive(Clone)]
-pub struct PublicKey {
-    /// The x-only public key for secp256k1
-    key: XOnlyPublicKey,
+pub trait PublicKeyExt {
+    /// Create a `PublicKey` from a BIP-340 Multikey.
+    fn from_multikey(multikey: &str) -> Result<Self, Error>
+    where
+        Self: Sized;
+
+    /// Encode a `PublicKey` into a BIP-340 Multikey.
+    fn to_multikey(&self) -> String;
 }
 
-impl PublicKey {
-    /// Create a new public key from bytes
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        let x_only_bytes = &bytes[1..]; // Skip the first parity byte
-        let key =
-            XOnlyPublicKey::from_slice(x_only_bytes).map_err(Error::InvalidBytesForPublicKey)?;
-        Ok(Self { key })
-    }
+pub trait SecretKeyExt {
+    /// Generate a new random secret key.
+    fn generate() -> Self;
+}
 
-    /// Returns the 32-byte x-only representation as a Vec<u8>
-    pub fn to_bytes(&self) -> Vec<u8> {
-        self.key.serialize().to_vec()
-    }
-
-    /// Create a public key from a multikey
-    pub fn from_multikey(multikey: &str) -> Result<Self, Error> {
+impl PublicKeyExt for PublicKey {
+    fn from_multikey(multikey: &str) -> Result<Self, Error> {
         // Ensure multikey starts with 'z' (base58-btc)
         if !multikey.starts_with('z') {
             return Err(Error::MultibasePrefix);
@@ -59,13 +53,12 @@ impl PublicKey {
         }
 
         // Extract key data (after the 2-byte prefix)
-        Self::from_bytes(&data[2..])
+        Self::from_slice(&data[2..]).map_err(Error::InvalidBytesForPublicKey)
     }
 
-    /// Encode the public key in a specific format
-    pub fn encode(&self) -> String {
+    fn to_multikey(&self) -> String {
         // Serialize to bytes
-        let key_bytes = self.key.serialize();
+        let key_bytes = self.serialize();
 
         // Prepend Multikey prefix for secp256k1 x-only (0xe14a)
         let mut data = Vec::with_capacity(2 + key_bytes.len());
@@ -80,39 +73,12 @@ impl PublicKey {
         format!("z{encoded}")
     }
 }
-impl fmt::Debug for PublicKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let multikey = self.encode();
-        write!(f, "PublicKey({multikey})")
-    }
-}
 
-/// Represents a secret key
-#[derive(Clone)]
-pub struct SecretKey {
-    /// The secret key for secp256k1
-    pub key: SecpSecretKey,
-}
+impl SecretKeyExt for SecretKey {
+    fn generate() -> Self {
+        let mut rng = rand::rngs::OsRng;
 
-impl SecretKey {
-    /// Create a new secret key from bytes
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        let key = SecpSecretKey::from_slice(bytes).map_err(Error::InvalidBytesForSecretKey)?;
-        Ok(Self { key })
-    }
-
-    /// Generate a new random secret key
-    pub fn generate() -> Result<Self, Error> {
-        use rand::rngs::OsRng;
-        let mut rng = OsRng;
-        let key = SecpSecretKey::new(&mut rng);
-        Ok(Self { key })
-    }
-}
-
-impl fmt::Debug for SecretKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SecretKey(<redacted>)")
+        Self::new(&mut rng)
     }
 }
 
@@ -129,9 +95,7 @@ impl KeyPair {
     /// Create a new key pair from a secret key
     pub fn from_secret_key(secret_key: SecretKey) -> Self {
         let secp = Secp256k1::new();
-        let public_key = PublicKey {
-            key: secret_key.key.x_only_public_key(&secp).0,
-        };
+        let public_key = secret_key.public_key(&secp);
         Self {
             public_key,
             secret_key,
@@ -139,8 +103,7 @@ impl KeyPair {
     }
 
     /// Generate a new random key pair
-    pub fn generate() -> Result<Self, Error> {
-        let secret_key = SecretKey::generate()?;
-        Ok(Self::from_secret_key(secret_key))
+    pub fn generate() -> Self {
+        Self::from_secret_key(SecretKey::generate())
     }
 }

@@ -1,5 +1,6 @@
 use crate::error::{Btc1Error, ProblemDetails};
 use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network};
+use crate::key::PublicKeyExt as _;
 use crate::verification::{VerificationMethod, VerificationMethodId};
 use crate::{key::PublicKey, proof::Proof, service::Service, verification};
 use onlyerror::Error;
@@ -27,6 +28,10 @@ pub enum Error {
     /// Error converting JSON Value to str
     #[error("Value can't be converted to str for key `{0}`")]
     JsonValueStr(String),
+
+    /// Missing element
+    #[error("Element `{0}` does not exist")]
+    JsonMissingElement(String),
 
     /// Expected JSON string
     #[error("Expected JSON string")]
@@ -115,16 +120,24 @@ pub struct DocumentPatch;
 impl Document {
     // Spec section 4.1.1
     pub fn from_did_components(did_components: DidComponents) -> Result<(Did, Self), Error> {
-        todo!()
+        let did = Did::from(did_components);
+        let initial_document = Self::read(&did, ResolutionOptions::default())?;
+        Ok((did, initial_document))
     }
 
     // Spec section 4.1.2
-    /// Create a document from an initial JSON document that has been prepared externally.
-    pub fn from_initial(
-        _doc: InitialDocument,
+    /// Create a document from an external intermediate DID Document that has been prepared
+    /// externally.
+    pub fn from_external_intermediate(
+        _doc: IntermediateDocument,
         _version: Option<DidVersion>,
         _network: Option<Network>,
     ) -> Result<(Did, Self), Error> {
+        // Set idType to “external”.
+        // Set version to 1.
+        // Set network to the desired network.
+        // Set genesisBytes to the result of passing intermediateDocument into the JSON Canonicalization and Hash algorithm.
+
         todo!()
     }
 
@@ -177,23 +190,33 @@ impl Document {
 }
 
 fn string_from_json<'value>(value: &'value Value, key: &str) -> Result<&'value str, Error> {
-    value[key]
-        .as_str()
-        .ok_or_else(|| Error::JsonValueStr(key.into()))
+    let obj = &value[key];
+
+    if obj.is_null() {
+        Err(Error::JsonMissingElement(key.into()))
+    } else {
+        obj.as_str().ok_or_else(|| Error::JsonValueStr(key.into()))
+    }
 }
 
 fn array_from_json<T, F>(value: &Value, key: &str, map_fn: F) -> Result<Vec<T>, Error>
 where
     F: Fn(&Value) -> Result<T, Error>,
 {
-    value[key]
-        .as_array()
-        .ok_or_else(|| Error::JsonValueStr(key.into()))?
-        .iter()
-        .map(map_fn)
-        .collect::<Result<Vec<_>, Error>>()
+    let obj = &value[key];
+
+    if obj.is_null() {
+        Ok(Vec::new())
+    } else {
+        obj.as_array()
+            .ok_or_else(|| Error::JsonValueStr(key.into()))?
+            .iter()
+            .map(map_fn)
+            .collect::<Result<Vec<_>, Error>>()
+    }
 }
 
+// TODO: LOL let's pick a real name for this
 fn bikeshed_my_name(value: &Value, key: &str) -> Result<Vec<String>, Error> {
     let strings = array_from_json(value, key, |s| string_from_value(s).map(String::from))
         .or_else(|_| Ok::<_, Error>(vec![string_from_json(value, key)?.to_string()]))?;
@@ -229,9 +252,16 @@ impl Document {
     /// Create a document from a JSON Value
     pub fn from_json_value(value: Value) -> Result<Self, Error> {
         let id: Did = string_from_json(&value, "id")?.parse()?;
+
+        // TODO: Might want to abstract this null-check for required keys.
+        if value["@context"].is_null() {
+            return Err(Error::JsonMissingElement("@context".into()));
+        }
         let context = array_from_json(&value, "@context", |id| {
             string_from_value(id).map(ToString::to_string)
         })?;
+
+        // TODO: All of these are optional. Only `vec_from_json_value` has been fixed
         let controller = vec_from_json_value(&value, "controller")?;
         let verification_method = array_from_json(&value, "verificationMethod", |method| {
             Ok(VerificationMethod::new(
@@ -322,6 +352,27 @@ pub struct InitialDocument {
 }
 
 impl InitialDocument {
+    /// Load an initial document from a file
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        let content = fs::read_to_string(path)?;
+        Self::from_json_string(&content)
+    }
+
+    /// Create an initial document from a JSON string
+    pub fn from_json_string(json: &str) -> Result<Self, Error> {
+        let value: Value = serde_json::from_str(json)?;
+        Self::from_json_value(value)
+    }
+
+    /// Create an initial document from a JSON Value
+    pub fn from_json_value(value: Value) -> Result<Self, Error> {
+        let doc = Document::from_json_value(value)?;
+
+        Ok(Self {
+            json_data: Value::Object(doc.data),
+        })
+    }
+
     // Spec section 4.2.1
     /// Create an initial document from an existing DID.
     pub fn from_did(did: &Did, resolution_options: &ResolutionOptions) -> Result<Self, Error> {
@@ -344,7 +395,7 @@ impl InitialDocument {
                     "id": verification_method_id,
                     "type": "MultiKey",
                     "controller": did.encode(),
-                    "publicKeyMultibase": did.public_key_unchecked().encode(),
+                    "publicKeyMultibase": did.public_key_unchecked().to_multikey(),
                 }],
                 "authentication": verification_method_ids,
                 "assertionMethod": verification_method_ids,
@@ -377,6 +428,56 @@ impl InitialDocument {
 
     // Spec section 4.2.1.2.1
     fn sidecar_initial_validation(&self, did: &Did) -> Result<Self, Error> {
+        let intermediate_doc = IntermediateDocument::from_initial(did, self);
+
+        // Canonicalize the JSON doc to get a hash
+        // todo: need to use RDFC canonicalization instead
+        let jcs =
+            serde_jcs::to_string(&intermediate_doc.json_data).expect("JSON is always valid JCS");
+        let hash_bytes = Sha256::digest(jcs.as_bytes());
+
+        let IdType::External(hash) = did.components().id_type() else {
+            unreachable!();
+        };
+
+        if hash[..] != hash_bytes[..] {
+            return Err(Btc1Error::InvalidDid(
+                "TODO: description for sidecar_initial_validation() hash mismatch".to_string(),
+            ))?;
+        }
+
+        Ok(self.clone())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct IntermediateDocument {
+    json_data: Value,
+}
+
+impl IntermediateDocument {
+    /// Load an intermediate document from a file
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        let content = fs::read_to_string(path)?;
+        Self::from_json_string(&content)
+    }
+
+    /// Create an intermediate document from a JSON string
+    pub fn from_json_string(json: &str) -> Result<Self, Error> {
+        let value: Value = serde_json::from_str(json)?;
+        Self::from_json_value(value)
+    }
+
+    /// Create an intermediate document from a JSON Value
+    pub fn from_json_value(value: Value) -> Result<Self, Error> {
+        let doc = Document::from_json_value(value)?;
+
+        Ok(Self {
+            json_data: Value::Object(doc.data),
+        })
+    }
+
+    fn from_initial(did: &Did, initial_doc: &InitialDocument) -> Self {
         fn find_and_replace(value: &mut Value, encoded: &str) {
             match value {
                 Value::String(s) => {
@@ -397,25 +498,10 @@ impl InitialDocument {
         }
 
         // Find and replace all DIDs with the DID placeholder string.
-        let mut intermediate_doc = self.clone().json_data;
-        find_and_replace(&mut intermediate_doc, did.encode());
+        let mut json_data = initial_doc.json_data.clone();
+        find_and_replace(&mut json_data, did.encode());
 
-        // Canonicalize the JSON doc to get a hash
-        // todo: need to use RDFC canonicalization instead
-        let jcs = serde_jcs::to_string(&intermediate_doc).expect("JSON is always valid JCS");
-        let hash_bytes = Sha256::digest(jcs.as_bytes());
-
-        let IdType::External(hash) = did.components().id_type() else {
-            unreachable!();
-        };
-
-        if hash[..] != hash_bytes[..] {
-            return Err(Btc1Error::InvalidDid(
-                "TODO: description for sidecar_initial_validation() hash mismatch".to_string(),
-            ))?;
-        }
-
-        Ok(self.clone())
+        Self { json_data }
     }
 }
 
@@ -461,14 +547,10 @@ mod tests {
 
     #[test]
     fn test_sidecar_initial_validation() {
-        let json = fs::read_to_string(
-            "../did-btc1/TestVectors/regtest/x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf/initialDidDoc.json",
-        ).unwrap();
+        let path = "./fixtures/initialDidDoc.json";
         let resolution_options = ResolutionOptions {
             sidecar_data: Some(SidecarData {
-                initial_document: Some(InitialDocument {
-                    json_data: json.parse().unwrap(),
-                }),
+                initial_document: Some(InitialDocument::from_file(path).unwrap()),
             }),
             ..Default::default()
         };
@@ -477,5 +559,31 @@ mod tests {
             .parse()
             .unwrap();
         let initial_doc = InitialDocument::resolve_external(&did, &resolution_options).unwrap();
+    }
+
+    #[test]
+    fn test_document_validation_missing_elements() {
+        let path = "./fixtures/initialDidDoc-missing-verificationMethod-id.json";
+        assert!(matches!(
+            InitialDocument::from_file(path),
+            Err(Error::JsonMissingElement(key)) if key == "id"
+        ));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_document_from_did_components() {
+        let id_type = IdType::from(
+            PublicKey::from_slice(
+                &hex::decode("03da2c07d2443fbf228aa773e5f685562158d39ee675b586b3ebdb897e7f1e56f5")
+                    .unwrap(),
+            )
+            .unwrap(),
+        );
+        let did_components =
+            DidComponents::new(DidVersion::One, Network::Regtest, id_type).unwrap();
+
+        let (did, document) = Document::from_did_components(did_components).unwrap();
+        assert!(document.controller.contains(&did));
     }
 }

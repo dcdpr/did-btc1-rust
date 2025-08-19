@@ -54,3 +54,15 @@ for next time:
 - Implement section 4.1.1
 - Implement section 4.1.2
 
+
+2025-08-18:
+
+- Implemented 4.1.1 with function from_did_components()
+- Tried to start 4.1.2, but got side-tracked by creating IntermediateDocument, to go along with InitialDocument and Document
+- Worked on some problems we had importing JSON-LD from our test files and checking structural integrity of the documents
+
+for next time:
+
+- May want to think about proptesting our structual concerns
+- Continue to implement section 4.1.2
+- Then 4.2 (read/resolve)

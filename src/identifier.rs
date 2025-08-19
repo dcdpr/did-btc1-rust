@@ -16,6 +16,7 @@
 //!
 //! ```rust
 //! use did_btc1::identifier::{Network, IdType, Error, DidVersion, Did};
+//! use did_btc1::key::{PublicKeyExt};
 //!
 //! // Parse a DID identifier
 //! let didstr = "did:btc1:k1qqpuwwde82nennsavvf0lqfnlvx7frrgzs57lchr02q8mz49qzaaxmqphnvcx";
@@ -29,7 +30,7 @@
 //! assert!(matches!(components.id_type(), IdType::Key(_)));
 //!
 //! if let Some(public_key) = did.public_key() {
-//!     println!("{}", public_key.encode());
+//!     println!("{}", public_key.to_multikey());
 //! }
 //!
 //! # Ok::<(), Error>(())
@@ -89,9 +90,12 @@ pub enum Error {
 
     /// Error with key operations
     Key(#[from] crate::key::Error),
+
+    /// Invalid hash length
+    InvalidHashLength,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Did {
     encoded: String,
     components: DidComponents,
@@ -134,14 +138,14 @@ impl Did {
 
     pub fn public_key(&self) -> Option<PublicKey> {
         match self.components.id_type {
-            IdType::Key(key) => PublicKey::from_bytes(&key).ok(),
+            IdType::Key(key) => PublicKey::from_slice(&key).ok(),
             IdType::External(_) => None,
         }
     }
 
     pub(crate) fn public_key_unchecked(&self) -> PublicKey {
         match self.components.id_type {
-            IdType::Key(key) => PublicKey::from_bytes(&key).unwrap(),
+            IdType::Key(key) => PublicKey::from_slice(&key).unwrap(),
             IdType::External(_) => unreachable!(),
         }
     }
@@ -261,7 +265,19 @@ impl TryFrom<&DecodedResult> for IdType {
     }
 }
 
+impl From<PublicKey> for IdType {
+    fn from(key: PublicKey) -> Self {
+        Self::Key(key.serialize())
+    }
+}
+
 impl IdType {
+
+    /// Create External from byte slice. Slice must be exactly 32 bytes long.
+    pub fn from_sha256_hash(hash: &[u8]) -> Result<Self, Error> {
+        Ok(IdType::External(hash.try_into().map_err(|_| Error::InvalidHashLength)?))
+    }
+
     /// Get the human-readable part for this identifier type
     pub fn hrp(&self) -> &'static str {
         match self {
