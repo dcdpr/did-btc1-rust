@@ -9,7 +9,7 @@ pub enum Error {
     MissingServiceEndpointAttribute,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Service {
     id: Option<String>,
     ty: Vec<String>,

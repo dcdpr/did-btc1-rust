@@ -66,3 +66,18 @@ for next time:
 - May want to think about proptesting our structual concerns
 - Continue to implement section 4.1.2
 - Then 4.2 (read/resolve)
+
+
+2025-08-19:
+
+- Finished 4.1.2 (From External Intermediate DID Document)
+- Parameterized DocumentFields so that we could parse the included DIDs or leave them as strings (so we can deal with intermediate docs with xxxxxx placeholders)
+- stared 4.2 and beginning of blockchain traversal.
+
+for next time:
+
+- Hopefully get some answers to my six issues I filed today
+- continue with blockchain traversal
+- some sprinkled todos around that we might want to deal with
+- Need to get into Sans-IO thinking (reading: https://www.firezone.dev/blog/sans-io)
+

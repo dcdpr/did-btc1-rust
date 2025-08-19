@@ -33,8 +33,8 @@ impl FromStr for VerificationMethodId {
 }
 
 /// Represents a verification method for cryptographic proofs
-#[derive(Debug, Clone)]
-pub struct VerificationMethod {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationMethod<T> {
     /// Identifier for the verification method
     pub id: VerificationMethodId,
 
@@ -42,15 +42,15 @@ pub struct VerificationMethod {
     pub type_: VerificationMethodType,
 
     /// The controller of this verification method
-    pub controller: Did,
+    pub controller: T,
 
     /// Public key
     public_key: PublicKey,
 }
 
-impl VerificationMethod {
+impl<T> VerificationMethod<T> {
     /// Create a new verification method
-    pub fn new(id: VerificationMethodId, controller: Did, public_key: PublicKey) -> Self {
+    pub fn new(id: VerificationMethodId, controller: T, public_key: PublicKey) -> Self {
         Self {
             id,
             type_: VerificationMethodType::Multikey,
@@ -72,7 +72,7 @@ impl VerificationMethod {
 /// Mock verification method resolver for testing
 #[derive(Debug, Default)]
 pub struct MockVerificationMethodResolver {
-    methods: Vec<VerificationMethod>,
+    methods: Vec<VerificationMethod<Did>>,
 }
 
 impl MockVerificationMethodResolver {
@@ -84,12 +84,12 @@ impl MockVerificationMethodResolver {
     }
 
     /// Add a verification method to the resolver
-    pub fn add_method(&mut self, method: VerificationMethod) {
+    pub fn add_method(&mut self, method: VerificationMethod<Did>) {
         self.methods.push(method);
     }
 
     /// Resolve a verification method by ID
-    pub fn resolve(&self, id: VerificationMethodId) -> Option<&VerificationMethod> {
+    pub fn resolve(&self, id: VerificationMethodId) -> Option<&VerificationMethod<Did>> {
         self.methods.iter().find(|m| m.id == id)
     }
 }
@@ -97,5 +97,5 @@ impl MockVerificationMethodResolver {
 /// Trait for resolving verification methods
 pub trait VerificationMethodResolver {
     /// Resolve a verification method by ID
-    fn resolve(&self, id: &str) -> Result<VerificationMethod, Error>;
+    fn resolve(&self, id: &str) -> Result<VerificationMethod<Did>, Error>;
 }

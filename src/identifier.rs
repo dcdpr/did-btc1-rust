@@ -152,8 +152,9 @@ impl Did {
 }
 
 /// DID:BTC1 encoding version
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum DidVersion {
+    #[default]
     One = 1,
 }
 
@@ -175,10 +176,11 @@ impl From<DidVersion> for u8 {
 }
 
 /// Bitcoin networks supported by DID:BTC1
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Network {
     /// Bitcoin mainnet
+    #[default]
     Mainnet = 0,
     /// Bitcoin signet
     Signet = 1,
@@ -272,10 +274,11 @@ impl From<PublicKey> for IdType {
 }
 
 impl IdType {
-
     /// Create External from byte slice. Slice must be exactly 32 bytes long.
     pub fn from_sha256_hash(hash: &[u8]) -> Result<Self, Error> {
-        Ok(IdType::External(hash.try_into().map_err(|_| Error::InvalidHashLength)?))
+        Ok(IdType::External(
+            hash.try_into().map_err(|_| Error::InvalidHashLength)?,
+        ))
     }
 
     /// Get the human-readable part for this identifier type
