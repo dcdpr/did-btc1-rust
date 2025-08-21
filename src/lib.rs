@@ -1,3 +1,4 @@
+pub mod blockchain;
 pub mod cryptosuite;
 pub mod document;
 pub mod error;

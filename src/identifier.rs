@@ -146,7 +146,7 @@ impl Did {
     pub(crate) fn public_key_unchecked(&self) -> PublicKey {
         match self.components.id_type {
             IdType::Key(key) => PublicKey::from_slice(&key).unwrap(),
-            IdType::External(_) => unreachable!(),
+            IdType::External(_) => unreachable!(), // todo: parse don't validate
         }
     }
 }
@@ -494,7 +494,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_invalid_genesis_length() {
-        // todo: need to construct plausible "k1" bech32 string with wrong number of bytes
+        // todo: ignored until dan constructs plausible "k1" bech32 string with wrong number of bytes
         let bstring = "k1ru0p68qmrgv3s9ckz52pxys3zq8surgvpv9qjzq8qczsgqczqyqqncvqap";
         let dr: DecodedResult = decode(bstring).unwrap();
 

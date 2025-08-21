@@ -4,16 +4,38 @@ use crate::key::PublicKeyExt as _;
 use crate::verification::{VerificationMethod, VerificationMethodId};
 use crate::{key::PublicKey, proof::Proof, service::Service, verification};
 use onlyerror::Error;
-use serde::de::Error as SerdeError;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
+use std::fmt::Display;
 use std::{fs, path::Path, str::FromStr};
+use chrono::{DateTime, Utc};
 
 const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
 const DID_BTC1_CONTEXT: &str = "https://did-btc1/TBD/context";
 
 const DID_PLACEHOLDER: &str =
     "did:btc1:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+
+#[derive(Debug)]
+pub enum ExpectedType {
+    Number,
+    String,
+    Boolean,
+    Array,
+    Object,
+}
+
+impl Display for ExpectedType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExpectedType::Number => write!(f, "Number"),
+            ExpectedType::String => write!(f, "String"),
+            ExpectedType::Boolean => write!(f, "Boolean"),
+            ExpectedType::Array => write!(f, "Array"),
+            ExpectedType::Object => write!(f, "Object"),
+        }
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -26,15 +48,14 @@ pub enum Error {
     JsonParse(#[from] serde_json::Error),
 
     /// Error converting JSON Value to str
-    #[error("Value can't be converted to str for key `{0}`")]
-    JsonValueStr(String),
+    #[error("Object key `{0}` was expected to be type `{1}`")]
+    UnexpectedJsonType(String, ExpectedType),
 
     /// Missing element
     #[error("Element `{0}` does not exist")]
     JsonMissingElement(String),
 
-    /// Expected JSON string
-    #[error("Expected JSON string")]
+    /// Expected a JSON string
     ExpectedJsonStr,
 
     /// Error with key operations
@@ -51,7 +72,7 @@ pub enum Error {
     Service(#[from] crate::service::Error),
 
     /// DID:BTC1 error
-    Btc1Error(#[from] crate::error::Btc1Error),
+    Btc1Error(#[from] Btc1Error),
 
     /// This should not happen
     Infallible(#[from] std::convert::Infallible),
@@ -66,6 +87,10 @@ impl ProblemDetails for Error {
     }
 }
 
+/// Fully parsed and validated DID document fields.
+///
+/// The DID identifier is allowed to be either [`Did`] or [`String`]. This specifically allows
+/// parsing intermediate DID documents with the "xxx" DID placeholders.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DocumentFields<T> {
     /// DID identifier
@@ -96,34 +121,34 @@ where
     type Error = Error;
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
-        let id = string_from_json(value, "id")?.parse()?;
+        let id = string_from_object(value, "id")?.parse()?;
 
         // TODO: Might want to abstract this null-check for required keys.
         if value["@context"].is_null() {
             return Err(Error::JsonMissingElement("@context".into()));
         }
-        let context = array_from_json(value, "@context", |id| {
+        let context = vec_from_object(value, "@context", |id| {
             string_from_value(id).map(ToString::to_string)
         })?;
 
-        // TODO: All of these are optional. Only `vec_from_json_value` has been fixed
-        let controller = vec_from_json_value(value, "controller")?;
-        let verification_method = array_from_json(value, "verificationMethod", |method| {
+        // TODO: All of these are optional. Only `vec_from_value` has been fixed
+        let controller = vec_from_value(value, "controller")?;
+        let verification_method = vec_from_object(value, "verificationMethod", |method| {
             Ok(VerificationMethod::new(
-                string_from_json(method, "id")?.parse()?,
-                string_from_json(method, "controller")?.parse()?,
-                PublicKey::from_multikey(string_from_json(method, "publicKeyMultibase")?)?,
+                string_from_object(method, "id")?.parse()?,
+                string_from_object(method, "controller")?.parse()?,
+                PublicKey::from_multikey(string_from_object(method, "publicKeyMultibase")?)?,
             ))
         })?;
-        let authentication = vec_from_json_value(value, "authentication")?;
-        let assertion_method = vec_from_json_value(value, "assertionMethod")?;
-        let capability_invocation = vec_from_json_value(value, "capabilityInvocation")?;
-        let capability_delegation = vec_from_json_value(value, "capabilityDelegation")?;
-        let service = array_from_json(value, "service", |service| {
+        let authentication = vec_from_value(value, "authentication")?;
+        let assertion_method = vec_from_value(value, "assertionMethod")?;
+        let capability_invocation = vec_from_value(value, "capabilityInvocation")?;
+        let capability_delegation = vec_from_value(value, "capabilityDelegation")?;
+        let service = vec_from_object(value, "service", |service| {
             Ok(Service::new(
-                Some(string_from_json(service, "id")?.to_string()),
-                bikeshed_my_name(service, "type")?,
-                bikeshed_my_name(service, "serviceEndpoint")?,
+                Some(string_from_object(service, "id")?.to_string()),
+                strings_from_object(service, "type")?,
+                strings_from_object(service, "serviceEndpoint")?,
             )?)
         })?;
 
@@ -150,90 +175,36 @@ pub struct Document {
     data: Map<String, Value>,
 }
 
+/// DID document resolution options.
 #[derive(Debug, Default)]
 pub struct ResolutionOptions {
     /// The Media Type of the caller's preferred representation of the DID document
-    accept: Option<String>,
+    pub accept: Option<String>,
 
     /// Flag which instructs a DID resolver to expand relative DID URLs
-    expand_relative_urls: bool,
+    pub expand_relative_urls: bool,
 
     /// The version of the identifier and/or DID document
-    version_id: Option<u64>,
+    pub version_id: Option<u64>,
 
     /// A timestamp used during resolution as a bound for when to stop resolving
-    version_time: Option<u64>, // TODO: Use chrono? UTCDateTime
+    pub version_time: Option<DateTime<Utc>>,
 
     /// Data necessary for resolving a DID such as DID Update Payloads and SMT proofs
-    sidecar_data: Option<SidecarData>,
+    pub sidecar_data: Option<SidecarData>,
 
     /// The bitcoin network used for resolution
-    network: Option<Network>,
-}
-
-#[derive(Debug)]
-struct BlockchainTraversal {
-    did: Did,
-    contemporary_doc: ContemporaryDocument,
-    contemporary_block_height: u32, // ?
-    current_version_id: u64,
-    target_condition: TargetCondition, // TODO: This may need both (what is the default for version_id???)
-    did_document_history: Vec<ContemporaryDocument>,
-    update_hash_history: Vec<[u8; SHA256_HASH_LEN]>, // TODO: We need a type alias or something for hashes
-    signals_metadata: Option<SignalsMetadata>,
-}
-
-impl BlockchainTraversal {
-    fn new(initial_doc: InitialDocument, resolution_options: &ResolutionOptions) -> Self {
-        Self {
-            did: initial_doc.did.clone(),
-            contemporary_doc: initial_doc.into(),
-            contemporary_block_height: 0,
-            current_version_id: 1,
-            target_condition: TargetCondition::from(resolution_options),
-            did_document_history: vec![],
-            update_hash_history: vec![],
-            signals_metadata: resolution_options
-                .sidecar_data
-                .as_ref()
-                .and_then(|sidecar_data| sidecar_data.signals_metadata.clone()),
-        }
-    }
-
-    // Spec section 4.2.2.1
-    fn traverse(&mut self) {
-        todo!();
-    }
-}
-
-#[derive(Debug)]
-enum TargetCondition {
-    VersionId(u64),
-    Time(u64), // TODO: chrono or another DateTime type
-}
-
-impl From<&ResolutionOptions> for TargetCondition {
-    fn from(resolution_options: &ResolutionOptions) -> Self {
-        if let Some(version) = resolution_options.version_id {
-            Self::VersionId(version)
-        } else {
-            Self::Time(
-                resolution_options
-                    .version_time
-                    .unwrap_or_else(|| todo!("need chrono::now()")),
-            )
-        }
-    }
+    pub network: Option<Network>,
 }
 
 #[derive(Debug, Default)]
 pub struct SidecarData {
-    initial_document: Option<InitialDocument>,
-    signals_metadata: Option<SignalsMetadata>,
+    pub initial_document: Option<InitialDocument>,
+    pub signals_metadata: Option<SignalsMetadata>,
 }
 
 #[derive(Clone, Debug)]
-struct SignalsMetadata {}
+pub struct SignalsMetadata {}
 
 // Placeholders
 pub struct DocumentPatch;
@@ -256,7 +227,7 @@ impl Document {
         O: Into<ResolutionOptions>,
     {
         let resolution_options = resolution_options.into();
-        let initial_document = InitialDocument::from_did(&did, &resolution_options)?;
+        let initial_document = InitialDocument::from_did(did, &resolution_options)?;
         Self::resolve(initial_document, &resolution_options)
     }
 
@@ -300,26 +271,29 @@ impl Document {
         initial_document: InitialDocument,
         resolution_options: &ResolutionOptions,
     ) -> Result<Self, Error> {
-        //YOUAREHERE
         // TODO: We need a way to capture Spec section 4.2.2, step 6
         // The will be resolved by identifying the expected default value for ResolutionOptions::version_id
-        let blockchain_traversal = BlockchainTraversal::new(initial_document, resolution_options);
+        let blockchain_traversal =
+            crate::blockchain::Traversal::new(initial_document, resolution_options);
 
         todo!()
     }
 }
 
-fn string_from_json<'value>(value: &'value Value, key: &str) -> Result<&'value str, Error> {
+/// Returns value[key] as a str if it is a JSON string.
+fn string_from_object<'value>(value: &'value Value, key: &str) -> Result<&'value str, Error> {
     let obj = &value[key];
 
     if obj.is_null() {
         Err(Error::JsonMissingElement(key.into()))
     } else {
-        obj.as_str().ok_or_else(|| Error::JsonValueStr(key.into()))
+        obj.as_str()
+            .ok_or_else(|| Error::UnexpectedJsonType(key.into(), ExpectedType::String))
     }
 }
 
-fn array_from_json<T, F>(value: &Value, key: &str, map_fn: F) -> Result<Vec<T>, Error>
+/// Create a vector of any type from `value[key]` using a map function.
+fn vec_from_object<T, F>(value: &Value, key: &str, map_fn: F) -> Result<Vec<T>, Error>
 where
     F: Fn(&Value) -> Result<T, Error>,
 {
@@ -329,31 +303,33 @@ where
         Ok(Vec::new())
     } else {
         obj.as_array()
-            .ok_or_else(|| Error::JsonValueStr(key.into()))?
+            .ok_or_else(|| Error::UnexpectedJsonType(key.into(), ExpectedType::Array))?
             .iter()
             .map(map_fn)
             .collect::<Result<Vec<_>, Error>>()
     }
 }
 
-// TODO: LOL let's pick a real name for this
-fn bikeshed_my_name(value: &Value, key: &str) -> Result<Vec<String>, Error> {
-    let strings = array_from_json(value, key, |s| string_from_value(s).map(String::from))
-        .or_else(|_| Ok::<_, Error>(vec![string_from_json(value, key)?.to_string()]))?;
+/// Create a vector of one or more strings from `value[key]`.
+fn strings_from_object(value: &Value, key: &str) -> Result<Vec<String>, Error> {
+    let strings = vec_from_object(value, key, |s| string_from_value(s).map(String::from))
+        .or_else(|_| Ok::<_, Error>(vec![string_from_object(value, key)?.to_string()]))?;
 
     Ok(strings)
 }
 
+/// Returns a string if the JSON value is a string type.
 fn string_from_value(value: &Value) -> Result<&str, Error> {
     value.as_str().ok_or(Error::ExpectedJsonStr)
 }
 
-fn vec_from_json_value<T>(value: &Value, key: &str) -> Result<Vec<T>, Error>
+/// Create a vector of any type from `value[key]` if it can be parsed from a string.
+fn vec_from_value<T>(value: &Value, key: &str) -> Result<Vec<T>, Error>
 where
     T: FromStr,
     Error: From<<T as FromStr>::Err>,
 {
-    array_from_json(value, key, |v| Ok(string_from_value(v)?.parse()?))
+    vec_from_object(value, key, |v| Ok(string_from_value(v)?.parse()?))
 }
 
 impl Document {
@@ -375,10 +351,7 @@ impl Document {
 
         match value {
             Value::Object(map) => Ok(Self { fields, data: map }),
-            // TODO: Use a new error variant?
-            _ => Err(Error::JsonParse(serde_json::Error::custom(
-                "Document root must be a JSON object",
-            ))),
+            _ => unreachable!(), // todo: parse don't validate
         }
     }
 
@@ -426,25 +399,11 @@ impl Document {
     }
 }
 
+/// Representation of initial DID document, according to did::btc1 specification.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitialDocument {
-    did: Did,
+    pub(crate) did: Did,
     json_data: Value,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContemporaryDocument {
-    did: Did,
-    json_data: Value,
-}
-
-impl From<InitialDocument> for ContemporaryDocument {
-    fn from(initial_document: InitialDocument) -> Self {
-        Self {
-            did: initial_document.did,
-            json_data: initial_document.json_data,
-        }
-    }
 }
 
 impl InitialDocument {
@@ -561,7 +520,7 @@ impl InitialDocument {
         let hash_bytes = intermediate_doc.compute_hash();
 
         let IdType::External(hash) = did.components().id_type() else {
-            unreachable!();
+            unreachable!(); // todo: parse don't validate
         };
 
         if hash[..] != hash_bytes[..] {
@@ -574,6 +533,7 @@ impl InitialDocument {
     }
 }
 
+/// Representation of intermediate DID document, according to did::btc1 specification.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntermediateDocument {
     json_data: Value,
@@ -624,6 +584,22 @@ impl IntermediateDocument {
         let hash_bytes = Sha256::digest(jcs.as_bytes());
 
         hash_bytes[..].try_into().unwrap()
+    }
+}
+
+/// Representation of contemporary DID document, according to did::btc1 specification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContemporaryDocument {
+    pub(crate) did: Did,
+    json_data: Value,
+}
+
+impl From<InitialDocument> for ContemporaryDocument {
+    fn from(initial_document: InitialDocument) -> Self {
+        Self {
+            did: initial_document.did,
+            json_data: initial_document.json_data,
+        }
     }
 }
 
@@ -682,11 +658,10 @@ mod tests {
             "../did-btc1/TestVectors/mutinynet/k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp",
         );
 
-        // TODO: Parse the target document instead?
-        let doc = Document::from_file(root.join("initialDidDoc.json")).unwrap();
+        let doc = Document::from_file(root.join("targetDocument.json")).unwrap();
 
-        assert_eq!(doc.fields.service.len(), 3);
-        assert_eq!(doc.fields.verification_method.len(), 1);
+        assert_eq!(doc.fields.service.len(), 4);
+        assert_eq!(doc.fields.verification_method.len(), 2);
     }
 
     #[test]
@@ -704,6 +679,7 @@ mod tests {
             .parse()
             .unwrap();
         let initial_doc = InitialDocument::resolve_external(&did, &resolution_options).unwrap();
+        assert_eq!(initial_doc.did, did);
     }
 
     #[test]

@@ -81,3 +81,16 @@ for next time:
 - some sprinkled todos around that we might want to deal with
 - Need to get into Sans-IO thinking (reading: https://www.firezone.dev/blog/sans-io)
 
+2025-08-21: (part1)
+
+- Cleaned up lots of todos
+- Finalized a few tests
+- Created blockchain.rs module
+- Renamed some of our JSON extraction functions for be nicer and more consistent
+- Added a bunch of documentation comments for functions
+- Added chrono crate
+
+for next time:
+
+- figure out the confusing blockchain traversal part of the spec
+
