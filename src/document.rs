@@ -1,14 +1,13 @@
 use crate::error::{Btc1Error, ProblemDetails};
 use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, SHA256_HASH_LEN};
-use crate::key::PublicKeyExt as _;
+use crate::key::{PublicKey, PublicKeyExt as _};
 use crate::verification::{VerificationMethod, VerificationMethodId};
-use crate::{key::PublicKey, proof::Proof, service::Service, verification};
+use crate::{proof::Proof, service::Service};
+use chrono::{DateTime, Utc};
 use onlyerror::Error;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use std::fmt::Display;
-use std::{fs, path::Path, str::FromStr};
-use chrono::{DateTime, Utc};
+use std::{fmt::Display, fs, path::Path, str::FromStr};
 
 const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
 const DID_BTC1_CONTEXT: &str = "https://did-btc1/TBD/context";
@@ -65,7 +64,7 @@ pub enum Error {
     DidEncoding(#[from] crate::identifier::Error),
 
     /// Verification Error
-    Verification(#[from] verification::Error),
+    Verification(#[from] crate::verification::Error),
 
     /// Document service endpoints error
     #[error("Document service endpoints error")]

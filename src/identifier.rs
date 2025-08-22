@@ -229,8 +229,11 @@ impl From<Network> for u8 {
 /// Type of DID identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdType {
+    // TODO: Replace array with `PublicKey`
     /// Key-based identifier (secp256k1 public key)
     Key([u8; SECP256K1_COMPRESSED_KEY_LEN]),
+
+    // TODO: Replace array with a `Sha256Hash` new-type
     /// External document-based identifier (hash of external document)
     External([u8; SHA256_HASH_LEN]),
 }

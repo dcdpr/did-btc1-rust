@@ -44,6 +44,7 @@ pub enum Error {
     Other(String),
 }
 
+// TODO: Remove this
 /// Result type for this crate
 pub type Result<T> = std::result::Result<T, Error>;
 

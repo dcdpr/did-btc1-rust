@@ -17,21 +17,17 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn new<T, E, S>(id: Option<String>, ty: T, endpoint: E) -> Result<Self, Error>
+    pub fn new<T, E>(id: Option<String>, ty: T, endpoint: E) -> Result<Self, Error>
     where
-        T: IntoIterator<Item = S>,
-        E: IntoIterator<Item = S>,
-        S: AsRef<str>,
+        T: IntoIterator<Item: ToString>,
+        E: IntoIterator<Item: ToString>,
     {
-        let ty: Vec<_> = ty.into_iter().map(|s| s.as_ref().to_string()).collect();
+        let ty: Vec<_> = ty.into_iter().map(|s| s.to_string()).collect();
         if ty.is_empty() {
             return Err(Error::MissingTypeAttribute);
         }
 
-        let endpoint: Vec<_> = endpoint
-            .into_iter()
-            .map(|s| s.as_ref().to_string())
-            .collect();
+        let endpoint: Vec<_> = endpoint.into_iter().map(|s| s.to_string()).collect();
         if endpoint.is_empty() {
             return Err(Error::MissingServiceEndpointAttribute);
         }
@@ -56,13 +52,13 @@ mod tests {
 
     #[test]
     fn test_missing_type() {
-        let service = Service::new(None, [], ["bitcoin:mh8h6FXkMzHaW4RKerGT33ZLqx52xL28dU"]);
+        let service = Service::new(None, [0; 0], ["bitcoin:mh8h6FXkMzHaW4RKerGT33ZLqx52xL28dU"]);
         assert_eq!(service.unwrap_err(), Error::MissingTypeAttribute);
     }
 
     #[test]
     fn test_missing_service_endpoint() {
-        let service = Service::new(None, ["SingletonBeacon"], []);
+        let service = Service::new(None, ["SingletonBeacon"], [0; 0]);
         assert_eq!(service.unwrap_err(), Error::MissingServiceEndpointAttribute);
     }
 }
