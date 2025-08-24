@@ -81,7 +81,7 @@ for next time:
 - some sprinkled todos around that we might want to deal with
 - Need to get into Sans-IO thinking (reading: https://www.firezone.dev/blog/sans-io)
 
-2025-08-21: (part1)
+2025-08-21:
 
 - Cleaned up lots of todos
 - Finalized a few tests
@@ -93,4 +93,11 @@ for next time:
 for next time:
 
 - figure out the confusing blockchain traversal part of the spec
+
+
+2025-08-22:
+
+- We simplified From impl for Service
+- Added several todo comments
+
 
