@@ -10,6 +10,7 @@ use onlyerror::Error;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, fmt::Display, fs, path::Path, str::FromStr};
+use crate::blockchain::Traversal;
 
 const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
 const DID_BTC1_CONTEXT: &str = "https://did-btc1/TBD/context";
@@ -151,7 +152,7 @@ macro_rules! parse_document_fields {
                 Address::from_bip21(string_from_object(beacon, "descriptor")?, $network)?,
                 // TODO: Use TryInto instead of `as` ... Correctly handle non-u32 numbers.
                 int_from_object(beacon, "minimumConfirmationsRequired").map(|min| min as u32)?,
-            )?)
+            ))
         })?;
 
         DocumentFields {
@@ -256,10 +257,10 @@ struct SmtProofs;
 
 impl Document {
     // Spec section 4.1.1
-    pub fn from_did_components(did_components: DidComponents) -> Result<(Did, Self), Error> {
+    pub fn from_did_components(did_components: DidComponents) -> Result<(Did, Traversal), Error> {
         let did = Did::from(did_components);
-        let initial_document = Self::read(&did, ResolutionOptions::default())?;
-        Ok((did, initial_document))
+        let traversal = Self::read(&did, ResolutionOptions::default())?;
+        Ok((did, traversal))
     }
 
     // Spec section 4.2
@@ -267,7 +268,7 @@ impl Document {
     // TODO: Sans-I/O: This needs to not bake any I/O into the implementation. Instead, this should
     // return a finite state machine that represents the protocol described in the spec. This allows
     // the caller to do their own I/O and drive the state machine forward to `Document` resolution.
-    pub fn read<O>(did: &Did, resolution_options: O) -> Result<Self, Error>
+    pub fn read<O>(did: &Did, resolution_options: O) -> Result<Traversal, Error>
     where
         O: Into<ResolutionOptions>,
     {
@@ -315,13 +316,13 @@ impl Document {
     fn resolve(
         initial_document: InitialDocument,
         resolution_options: &ResolutionOptions,
-    ) -> Result<Self, Error> {
+    ) -> Result<Traversal, Error> {
         // TODO: We need a way to capture Spec section 4.2.2, step 6
         // The will be resolved by identifying the expected default value for ResolutionOptions::version_id
         let blockchain_traversal =
             crate::blockchain::Traversal::new(initial_document, resolution_options);
 
-        todo!()
+        Ok(blockchain_traversal)
     }
 }
 
@@ -452,6 +453,8 @@ impl Document {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitialDocument {
     pub(crate) did: Did,
+    // TODO: We really want one-or-more, not zero-or-more
+    pub(crate) beacon: Vec<Beacon>,
     json_data: Value,
 }
 
@@ -474,6 +477,7 @@ impl InitialDocument {
 
         Ok(Self {
             did: doc.fields.id,
+            beacon: doc.fields.beacon,
             json_data: Value::Object(doc.data),
         })
     }
@@ -518,9 +522,11 @@ impl InitialDocument {
     fn deterministically_generate(did: &Did) -> Self {
         let verification_method_id = format!("{}#initialKey", did.encode());
         let verification_method_ids = json!([verification_method_id]);
+        let beacon = generate_beacons(did);
 
         Self {
             did: did.clone(),
+            beacon: beacon.clone(),
             json_data: json!({
                 "id": did.encode(),
                 "@context": [DID_CORE_V1_1_CONTEXT, DID_BTC1_CONTEXT],
@@ -534,7 +540,7 @@ impl InitialDocument {
                 "assertionMethod": verification_method_ids,
                 "capabilityInvocation": verification_method_ids,
                 "capabilityDelegation": verification_method_ids,
-                "beacon": generate_beacons(did),
+                "beacon": beacon.into_iter().map(Beacon::into_json).collect::<Vec<_>>(),
             }),
         }
     }
@@ -585,6 +591,8 @@ impl InitialDocument {
 /// Representation of intermediate DID document, according to did::btc1 specification.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntermediateDocument {
+    // TODO: We really want one-or-more, not zero-or-more
+    pub(crate) beacon: Vec<Beacon>,
     json_data: Value,
 }
 
@@ -604,9 +612,12 @@ impl IntermediateDocument {
     /// Create an intermediate document from a JSON Value
     pub fn from_json_value(value: Value, network: Network) -> Result<Self, Error> {
         // validate structural integrity
-        DocumentFields::<String>::try_from((&value, network))?;
+        let fields = DocumentFields::<String>::try_from((&value, network))?;
 
-        Ok(Self { json_data: value })
+        Ok(Self {
+            beacon: fields.beacon,
+            json_data: value,
+        })
     }
 
     fn into_initial(self, did: &Did) -> InitialDocument {
@@ -616,6 +627,7 @@ impl IntermediateDocument {
 
         InitialDocument {
             did: did.clone(),
+            beacon: self.beacon,
             json_data,
         }
     }
@@ -625,7 +637,10 @@ impl IntermediateDocument {
         let mut json_data = initial_doc.json_data.clone();
         find_and_replace(&mut json_data, did.encode(), DID_PLACEHOLDER);
 
-        Self { json_data }
+        Self {
+            beacon: initial_doc.beacon.clone(),
+            json_data,
+        }
     }
 
     // TODO: This is just a duplicate of `from_initial()`
@@ -634,7 +649,10 @@ impl IntermediateDocument {
         let mut json_data = contemporary_doc.json_data.clone();
         find_and_replace(&mut json_data, did.encode(), DID_PLACEHOLDER);
 
-        Self { json_data }
+        Self {
+            beacon: contemporary_doc.beacon.clone(),
+            json_data,
+        }
     }
 
     fn compute_hash(&self) -> Sha256Hash {
@@ -649,6 +667,8 @@ impl IntermediateDocument {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContemporaryDocument {
     pub(crate) did: Did,
+    // TODO: We really want one-or-more, not zero-or-more
+    pub(crate) beacon: Vec<Beacon>,
     json_data: Value,
 }
 
@@ -656,6 +676,7 @@ impl From<InitialDocument> for ContemporaryDocument {
     fn from(initial_document: InitialDocument) -> Self {
         Self {
             did: initial_document.did,
+            beacon: initial_document.beacon,
             json_data: initial_document.json_data,
         }
     }
@@ -687,28 +708,35 @@ fn find_and_replace(value: &mut Value, from: &str, to: &str) {
 }
 
 // Spec section 4.2.1.1.1
-fn generate_beacons(did: &Did) -> Value {
-    let p2pkh_beacon = "TODO: Create P2PKH address from wallet";
-    let p2wpkh_beacon = "TODO: Create P2WPKH address from wallet";
-    let p2tr_beacon = "TODO: Create P2TR address from wallet";
+fn generate_beacons(did: &Did) -> Vec<Beacon> {
+    use crate::beacon::Type;
 
-    json!([
-        {
-            "id": format!("{}#initialP2PKH", did.encode()),
-            "type": "SingletonBeacon",
-            "serviceEndpoint": p2pkh_beacon,
-        },
-        {
-            "id": format!("{}#initialP2WPKH", did.encode()),
-            "type": "SingletonBeacon",
-            "serviceEndpoint": p2wpkh_beacon,
-        },
-        {
-            "id": format!("{}#initialP2TR", did.encode()),
-            "type": "SingletonBeacon",
-            "serviceEndpoint": p2tr_beacon,
-        },
-    ])
+    // TODO: No unwrap
+    let network = did.components().network().try_into().unwrap();
+
+    // TODO: Fix address generation
+    let p2pkh_beacon = "TODO: Create P2PKH address from wallet"
+        .parse::<Address<_>>()
+        .unwrap()
+        .require_network(network)
+        .unwrap();
+    let p2wpkh_beacon = "TODO: Create P2WPKH address from wallet"
+        .parse::<Address<_>>()
+        .unwrap()
+        .require_network(network)
+        .unwrap();
+    let p2tr_beacon = "TODO: Create P2TR address from wallet"
+        .parse::<Address<_>>()
+        .unwrap()
+        .require_network(network)
+        .unwrap();
+
+    // TODO: Fix default min_confirmations_required
+    vec![
+        Beacon::new(Type::Singleton, p2pkh_beacon, 6),
+        Beacon::new(Type::Singleton, p2wpkh_beacon, 6),
+        Beacon::new(Type::Singleton, p2tr_beacon, 6),
+    ]
 }
 
 #[cfg(test)]
@@ -775,7 +803,8 @@ mod tests {
             DidComponents::new(DidVersion::One, Network::Regtest, id_type).unwrap();
 
         let (did, document) = Document::from_did_components(did_components).unwrap();
-        assert!(document.fields.controller.contains(&did));
+        // todo: need to traverse
+        //assert!(document.fields.controller.contains(&did));
     }
 
     #[test]

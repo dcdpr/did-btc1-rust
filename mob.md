@@ -116,7 +116,7 @@ for next time:
 - More blockchain traversal
 
 
-2025-08-25
+2025-08-25 (part 1)
 
 - Added conversions for `bitcoin::Network`
 - Fixed the tests that now take `Beacon`
@@ -126,3 +126,14 @@ for next time:
 for next time:
 
 - Continue with blockchain Traversal. Section 4.2.2.1, Step 2.
+
+
+2025-08-25 (part 2)
+
+- Added to the Sans-I/O story, by drafting a FSM and an example that drives it.
+- Added Beacon to various document types.
+- `generate_beacon()` returns a strict `Vec<Beacon>` instead of json::Value
+
+for next time:
+
+- Continue with blockchain Traversal. Section 4.2.2.1, Step 4/5.

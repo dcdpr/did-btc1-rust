@@ -23,11 +23,11 @@ rand = "0.8"
 urlencoding = "2.1"
 chrono = "0.4"
 bitcoin.workspace = true
-
+esploda.workspace = true
 
 [dev-dependencies]
 tempfile = "3.8"
-
+ureq.workspace = true
 
 
 [workspace]
@@ -46,6 +46,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 onlyerror = "0.1"
 tokio = { version = "1.0", features = ["full"] }
+ureq = { version = "3.1", features = ["json"] }
 
 # Cryptography
 secp256k1 = { version = "0.30", features = ["serde", "rand"] }
@@ -54,6 +55,7 @@ multibase = "0.9"
 
 # Bitcoin
 bitcoin = "0.32"
+esploda = "0.2"
 
 # JSON processing
 serde_jcs = "0.1"

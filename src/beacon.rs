@@ -1,6 +1,7 @@
 use crate::identifier::Network;
 use bitcoin::address::Address;
 use onlyerror::Error;
+use serde_json::{Value, json};
 use std::{fmt, str::FromStr};
 
 #[derive(Debug, Error)]
@@ -43,12 +44,12 @@ impl AddressExt for Address {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Beacon {
-    ty: Type,
-    descriptor: Address,
-    min_confirmations_required: u32, // todo: need to figure out how to make this optional in the json @context
+    pub(crate) ty: Type,
+    pub(crate) descriptor: Address,
+    pub(crate) min_confirmations_required: u32, // todo: need to figure out how to make this optional in the json @context
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Type {
     Singleton,
     Map,
@@ -79,15 +80,19 @@ impl fmt::Display for Type {
 }
 
 impl Beacon {
-    pub fn new(
-        ty: Type,
-        descriptor: Address,
-        min_confirmations_required: u32,
-    ) -> Result<Self, Error> {
-        Ok(Self {
+    pub(crate) fn new(ty: Type, descriptor: Address, min_confirmations_required: u32) -> Self {
+        Self {
             ty,
             descriptor,
             min_confirmations_required,
+        }
+    }
+
+    pub(crate) fn into_json(self) -> Value {
+        json!({
+            "type": self.ty.to_string(),
+            "descriptor": format!("bitcoin:{}", self.descriptor),
+            "minimumConfirmationsRequired": self.min_confirmations_required,
         })
     }
 }
@@ -95,17 +100,6 @@ impl Beacon {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_new() {
-        let address = Address::from_bip21(
-            "bitcoin:mh8h6FXkMzHaW4RKerGT33ZLqx52xL28dU",
-            Network::Regtest,
-        )
-        .unwrap();
-        let beacon = Beacon::new(Type::Singleton, address, 0);
-        assert!(beacon.is_ok());
-    }
 
     #[test]
     fn test_invalid_beacon_address_uri() {
