@@ -1,6 +1,6 @@
 use crate::beacon::AddressExt as _;
 use crate::error::{Btc1Error, ProblemDetails};
-use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, SHA256_HASH_LEN};
+use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, Sha256Hash};
 use crate::key::{PublicKey, PublicKeyExt as _};
 use crate::verification::{VerificationMethod, VerificationMethodId};
 use crate::{beacon::Beacon, proof::Proof};
@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use onlyerror::Error;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use std::{fmt::Display, fs, path::Path, str::FromStr};
+use std::{collections::HashMap, fmt::Display, fs, path::Path, str::FromStr};
 
 const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
 const DID_BTC1_CONTEXT: &str = "https://did-btc1/TBD/context";
@@ -76,6 +76,10 @@ pub enum Error {
 
     /// This should not happen
     Infallible(#[from] std::convert::Infallible),
+
+    // Unexpected Did
+    #[error("Expected `{0}` but found `{1}`")]
+    UnexpectedDid(String, String),
 }
 
 impl ProblemDetails for Error {
@@ -113,52 +117,44 @@ struct DocumentFields<T> {
     beacon: Vec<Beacon>,
 }
 
-impl<T> TryFrom<&Value> for DocumentFields<T>
-where
-    T: FromStr,
-    VerificationMethodId: FromStr,
-    Error: From<<T as FromStr>::Err> + From<<VerificationMethodId as FromStr>::Err>,
-{
-    type Error = Error;
-
-    fn try_from(value: &Value) -> Result<Self, Self::Error> {
-        let id = string_from_object(value, "id")?.parse()?;
+/// Parse document fields with type checking.
+///
+/// Exists as a macro to DRY.
+macro_rules! parse_document_fields {
+    ($value:ident, $network:expr) => {{
+        let id = string_from_object($value, "id")?.parse()?;
 
         // TODO: Might want to abstract this null-check for required keys.
-        if value["@context"].is_null() {
+        if $value["@context"].is_null() {
             return Err(Error::JsonMissingElement("@context".into()));
         }
-        let context = vec_from_object(value, "@context", |id| {
+        let context = vec_from_object($value, "@context", |id| {
             string_from_value(id).map(ToString::to_string)
         })?;
 
         // TODO: All of these are optional. Only `vec_from_value` has been fixed
-        let controller = vec_from_value(value, "controller")?;
-        let verification_method = vec_from_object(value, "verificationMethod", |method| {
+        let controller = vec_from_value($value, "controller")?;
+        let verification_method = vec_from_object($value, "verificationMethod", |method| {
             Ok(VerificationMethod::new(
                 string_from_object(method, "id")?.parse()?,
                 string_from_object(method, "controller")?.parse()?,
                 PublicKey::from_multikey(string_from_object(method, "publicKeyMultibase")?)?,
             ))
         })?;
-        let authentication = vec_from_value(value, "authentication")?;
-        let assertion_method = vec_from_value(value, "assertionMethod")?;
-        let capability_invocation = vec_from_value(value, "capabilityInvocation")?;
-        let capability_delegation = vec_from_value(value, "capabilityDelegation")?;
-        let beacon = vec_from_object(value, "beacon", |beacon| {
+        let authentication = vec_from_value($value, "authentication")?;
+        let assertion_method = vec_from_value($value, "assertionMethod")?;
+        let capability_invocation = vec_from_value($value, "capabilityInvocation")?;
+        let capability_delegation = vec_from_value($value, "capabilityDelegation")?;
+        let beacon = vec_from_object($value, "beacon", |beacon| {
             Ok(Beacon::new(
                 string_from_object(beacon, "type")?.parse()?,
-                // TODO: Convert from did.components().network()
-                Address::from_bip21(
-                    string_from_object(beacon, "descriptor")?,
-                    bitcoin::Network::Regtest,
-                )?,
+                Address::from_bip21(string_from_object(beacon, "descriptor")?, $network)?,
                 // TODO: Use TryInto instead of `as` ... Correctly handle non-u32 numbers.
                 int_from_object(beacon, "minimumConfirmationsRequired").map(|min| min as u32)?,
             )?)
         })?;
 
-        Ok(DocumentFields {
+        DocumentFields {
             id,
             context,
             controller,
@@ -168,7 +164,41 @@ where
             capability_invocation,
             capability_delegation,
             beacon,
-        })
+        }
+    }};
+}
+
+/// Stringly-typed document fields for intermediate documents.
+impl TryFrom<(&Value, Network)> for DocumentFields<String>
+where
+    VerificationMethodId: FromStr,
+    Error: From<<VerificationMethodId as FromStr>::Err>,
+{
+    type Error = Error;
+
+    fn try_from((value, network): (&Value, Network)) -> Result<Self, Self::Error> {
+        Ok(parse_document_fields!(value, network))
+    }
+}
+
+/// Strictly-typed document fields for all other documents.
+impl TryFrom<(&Value, &Did)> for DocumentFields<Did>
+where
+    VerificationMethodId: FromStr,
+    Error: From<<Did as FromStr>::Err> + From<<VerificationMethodId as FromStr>::Err>,
+{
+    type Error = Error;
+
+    fn try_from((value, did): (&Value, &Did)) -> Result<Self, Self::Error> {
+        let doc: DocumentFields<Did> = parse_document_fields!(value, did.components().network());
+        if doc.id != *did {
+            Err(Error::UnexpectedDid(
+                did.encode().to_string(),
+                doc.id.encode().to_string(),
+            ))
+        } else {
+            Ok(doc)
+        }
     }
 }
 
@@ -206,14 +236,23 @@ pub struct ResolutionOptions {
 #[derive(Debug, Default)]
 pub struct SidecarData {
     pub initial_document: Option<InitialDocument>,
-    pub signals_metadata: Option<SignalsMetadata>,
+
+    // TODO: Use Txid instead of String
+    pub signals_metadata: HashMap<String, SignalsMetadata>,
 }
 
 #[derive(Clone, Debug)]
-pub struct SignalsMetadata {}
+pub struct SignalsMetadata {
+    btc1_update: Option<Update>,
+    proofs: SmtProofs,
+}
 
 // Placeholders
 pub struct DocumentPatch;
+#[derive(Clone, Debug)]
+struct Update;
+#[derive(Clone, Debug)]
+struct SmtProofs;
 
 impl Document {
     // Spec section 4.1.1
@@ -344,20 +383,20 @@ where
 
 impl Document {
     /// Load a document from a file
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+    pub fn from_file<P: AsRef<Path>>(path: P, did: &Did) -> Result<Self, Error> {
         let content = fs::read_to_string(path)?;
-        Self::from_json_string(&content)
+        Self::from_json_string(&content, did)
     }
 
     /// Create a document from a JSON string
-    pub fn from_json_string(json: &str) -> Result<Self, Error> {
+    pub fn from_json_string(json: &str, did: &Did) -> Result<Self, Error> {
         let value: Value = serde_json::from_str(json)?;
-        Self::from_json_value(value)
+        Self::from_json_value(value, did)
     }
 
     /// Create a document from a JSON Value
-    pub fn from_json_value(value: Value) -> Result<Self, Error> {
-        let fields = DocumentFields::try_from(&value)?;
+    pub fn from_json_value(value: Value, did: &Did) -> Result<Self, Error> {
+        let fields = DocumentFields::try_from((&value, did))?;
 
         match value {
             Value::Object(map) => Ok(Self { fields, data: map }),
@@ -418,20 +457,20 @@ pub struct InitialDocument {
 
 impl InitialDocument {
     /// Load an initial document from a file
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+    pub fn from_file<P: AsRef<Path>>(path: P, did: &Did) -> Result<Self, Error> {
         let content = fs::read_to_string(path)?;
-        Self::from_json_string(&content)
+        Self::from_json_string(&content, did)
     }
 
     /// Create an initial document from a JSON string
-    pub fn from_json_string(json: &str) -> Result<Self, Error> {
+    pub fn from_json_string(json: &str, did: &Did) -> Result<Self, Error> {
         let value: Value = serde_json::from_str(json)?;
-        Self::from_json_value(value)
+        Self::from_json_value(value, did)
     }
 
     /// Create an initial document from a JSON Value
-    pub fn from_json_value(value: Value) -> Result<Self, Error> {
-        let doc = Document::from_json_value(value)?;
+    pub fn from_json_value(value: Value, did: &Did) -> Result<Self, Error> {
+        let doc = Document::from_json_value(value, did)?;
 
         Ok(Self {
             did: doc.fields.id,
@@ -447,9 +486,9 @@ impl InitialDocument {
         version: Option<DidVersion>,
         network: Option<Network>,
     ) -> Result<(Did, Self), Error> {
-        let genesis_bytes = doc.compute_hash();
+        let hash = doc.compute_hash();
 
-        let id_type = IdType::External(genesis_bytes);
+        let id_type = IdType::External(hash);
 
         let did = DidComponents::new(
             version.unwrap_or_default(),
@@ -533,7 +572,7 @@ impl InitialDocument {
             unreachable!(); // todo: parse don't validate
         };
 
-        if hash[..] != hash_bytes[..] {
+        if hash != hash_bytes {
             return Err(Btc1Error::InvalidDid(
                 "TODO: description for sidecar_initial_validation() hash mismatch".to_string(),
             ))?;
@@ -551,21 +590,21 @@ pub struct IntermediateDocument {
 
 impl IntermediateDocument {
     /// Load an intermediate document from a file
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+    pub fn from_file<P: AsRef<Path>>(path: P, network: Network) -> Result<Self, Error> {
         let content = fs::read_to_string(path)?;
-        Self::from_json_string(&content)
+        Self::from_json_string(&content, network)
     }
 
     /// Create an intermediate document from a JSON string
-    pub fn from_json_string(json: &str) -> Result<Self, Error> {
+    pub fn from_json_string(json: &str, network: Network) -> Result<Self, Error> {
         let value: Value = serde_json::from_str(json)?;
-        Self::from_json_value(value)
+        Self::from_json_value(value, network)
     }
 
     /// Create an intermediate document from a JSON Value
-    pub fn from_json_value(value: Value) -> Result<Self, Error> {
+    pub fn from_json_value(value: Value, network: Network) -> Result<Self, Error> {
         // validate structural integrity
-        DocumentFields::<String>::try_from(&value)?;
+        DocumentFields::<String>::try_from((&value, network))?;
 
         Ok(Self { json_data: value })
     }
@@ -589,11 +628,20 @@ impl IntermediateDocument {
         Self { json_data }
     }
 
-    fn compute_hash(&self) -> [u8; SHA256_HASH_LEN] {
+    // TODO: This is just a duplicate of `from_initial()`
+    fn from_contemporary(did: &Did, contemporary_doc: &ContemporaryDocument) -> Self {
+        // Find and replace all DIDs with the DID placeholder string.
+        let mut json_data = contemporary_doc.json_data.clone();
+        find_and_replace(&mut json_data, did.encode(), DID_PLACEHOLDER);
+
+        Self { json_data }
+    }
+
+    fn compute_hash(&self) -> Sha256Hash {
         let jcs = serde_jcs::to_string(&self.json_data).expect("JSON is always valid JCS");
         let hash_bytes = Sha256::digest(jcs.as_bytes());
 
-        hash_bytes[..].try_into().unwrap()
+        Sha256Hash(hash_bytes[..].try_into().unwrap())
     }
 }
 
@@ -610,6 +658,12 @@ impl From<InitialDocument> for ContemporaryDocument {
             did: initial_document.did,
             json_data: initial_document.json_data,
         }
+    }
+}
+
+impl ContemporaryDocument {
+    pub(crate) fn compute_hash(&self, did: &Did) -> Sha256Hash {
+        IntermediateDocument::from_contemporary(did, self).compute_hash()
     }
 }
 
@@ -665,7 +719,10 @@ mod tests {
     #[test]
     fn test_document_parse() {
         let path = PathBuf::from("./fixtures/exampleTargetDocument.json");
-        let doc = Document::from_file(path).unwrap();
+        let did = "did:btc1:k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp"
+            .parse()
+            .unwrap();
+        let doc = Document::from_file(path, &did).unwrap();
 
         assert_eq!(doc.fields.beacon.len(), 4);
         assert_eq!(doc.fields.verification_method.len(), 2);
@@ -674,10 +731,13 @@ mod tests {
     #[test]
     fn test_sidecar_initial_validation() {
         let path = "./fixtures/initialDidDoc.json";
+        let did = "did:btc1:x1qgestr7xmvjpddg0s56ncpsrt8dct8gnrm5kchhxw3meutpu2cwcxegf65v"
+            .parse()
+            .unwrap();
         let resolution_options = ResolutionOptions {
             sidecar_data: Some(SidecarData {
-                initial_document: Some(InitialDocument::from_file(path).unwrap()),
-                signals_metadata: None,
+                initial_document: Some(InitialDocument::from_file(path, &did).unwrap()),
+                signals_metadata: HashMap::default(),
             }),
             ..Default::default()
         };
@@ -692,8 +752,11 @@ mod tests {
     #[test]
     fn test_document_validation_missing_elements() {
         let path = "./fixtures/initialDidDoc-missing-verificationMethod-id.json";
+        let did = "did:btc1:x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf"
+            .parse()
+            .unwrap();
         assert!(matches!(
-            InitialDocument::from_file(path),
+            InitialDocument::from_file(path, &did),
             Err(Error::JsonMissingElement(key)) if key == "id"
         ));
     }
@@ -718,8 +781,11 @@ mod tests {
     #[test]
     fn test_from_external_intermediate() {
         let root = PathBuf::from("fixtures");
-        let intermediate_doc =
-            IntermediateDocument::from_file(root.join("external-intermediateDidDoc.json")).unwrap();
+        let intermediate_doc = IntermediateDocument::from_file(
+            root.join("external-intermediateDidDoc.json"),
+            Network::Regtest,
+        )
+        .unwrap();
         let (did, initial_doc) = InitialDocument::from_external_intermediate(
             intermediate_doc,
             None,
@@ -731,7 +797,7 @@ mod tests {
         assert_eq!(did.encode(), expected_did.trim());
 
         let expected_doc =
-            InitialDocument::from_file(root.join("external-initialDidDoc.json")).unwrap();
+            InitialDocument::from_file(root.join("external-initialDidDoc.json"), &did).unwrap();
         assert_eq!(initial_doc, expected_doc);
     }
 }

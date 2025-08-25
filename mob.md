@@ -114,3 +114,15 @@ for next time:
 - Add conversions for `crate::identifier::Network` <--> `bitcoin::Network`
 - Fix tests
 - More blockchain traversal
+
+
+2025-08-25
+
+- Added conversions for `bitcoin::Network`
+- Fixed the tests that now take `Beacon`
+- Added a macro for DRY document parsing and structural validation
+- Added some convenience methods for `ContemporaryDocument` required by `blockchain::Traversal`
+
+for next time:
+
+- Continue with blockchain Traversal. Section 4.2.2.1, Step 2.

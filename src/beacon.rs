@@ -1,20 +1,21 @@
-use bitcoin::{Network, address::Address};
+use crate::identifier::Network;
+use bitcoin::address::Address;
 use onlyerror::Error;
 use std::{fmt, str::FromStr};
 
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error)]
 pub enum Error {
     /// Invalid beacon type
     InvalidBeaconType,
-
-    /// Missing or empty 'serviceEndpoint' attribute
-    InvalidBeaconDescriptor,
 
     /// Invalid BIP21 address.
     InvalidBip21,
 
     /// Bitcoin Address Parse error
     AddressParse(#[from] bitcoin::address::ParseError),
+
+    /// Identifier Parse Error
+    IdentifierParse(#[from] crate::identifier::Error),
 }
 
 /// Extension trait for [`Address`]. Allows parsing from [BIP21] URI.
@@ -34,7 +35,9 @@ impl AddressExt for Address {
             .map(|(addr, _params)| addr)
             .unwrap_or(address);
 
-        Ok(address.parse::<Address<_>>()?.require_network(network)?)
+        Ok(address
+            .parse::<Address<_>>()?
+            .require_network(network.try_into()?)?)
     }
 }
 
@@ -97,7 +100,7 @@ mod tests {
     fn test_new() {
         let address = Address::from_bip21(
             "bitcoin:mh8h6FXkMzHaW4RKerGT33ZLqx52xL28dU",
-            Network::Bitcoin,
+            Network::Regtest,
         )
         .unwrap();
         let beacon = Beacon::new(Type::Singleton, address, 0);
@@ -105,21 +108,10 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_beacon_descriptor() {
-        let address = Address::from_bip21(
-            "bitcoin:mh8h6FXkMzHaW4RKerGT33ZLqx52xL28dU",
-            Network::Bitcoin,
-        )
-        .unwrap();
-        let beacon = Beacon::new(Type::Singleton, address, 0);
-        assert_eq!(beacon.unwrap_err(), Error::InvalidBeaconDescriptor);
-    }
-
-    #[test]
     fn test_invalid_beacon_address_uri() {
         let address =
-            Address::from_bip21("foo:mh8h6FXkMzHaW4RKerGT33ZLqx52xL28dU", Network::Bitcoin);
+            Address::from_bip21("foo:mh8h6FXkMzHaW4RKerGT33ZLqx52xL28dU", Network::Regtest);
 
-        assert_eq!(address, Err(Error::InvalidBip21));
+        assert!(matches!(address, Err(Error::InvalidBip21)));
     }
 }

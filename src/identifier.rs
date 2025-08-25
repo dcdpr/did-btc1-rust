@@ -226,6 +226,21 @@ impl From<Network> for u8 {
     }
 }
 
+impl TryFrom<Network> for bitcoin::Network {
+    type Error = Error;
+
+    fn try_from(value: Network) -> Result<Self, Error> {
+        match value {
+            Network::Mainnet => Ok(Self::Bitcoin),
+            Network::TestnetV3 => Ok(Self::Testnet),
+            Network::TestnetV4 => Ok(Self::Testnet4),
+            Network::Regtest => Ok(Self::Regtest),
+            Network::Signet | Network::Mutinynet => Ok(Self::Signet),
+            _ => Err(Error::InvalidNetwork(u8::from(value))),
+        }
+    }
+}
+
 /// Type of DID identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdType {
@@ -233,10 +248,13 @@ pub enum IdType {
     /// Key-based identifier (secp256k1 public key)
     Key([u8; SECP256K1_COMPRESSED_KEY_LEN]),
 
-    // TODO: Replace array with a `Sha256Hash` new-type
     /// External document-based identifier (hash of external document)
-    External([u8; SHA256_HASH_LEN]),
+    External(Sha256Hash),
 }
+
+/// Represents a SHA-256 hash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sha256Hash(pub [u8; SHA256_HASH_LEN]);
 
 impl TryFrom<&DecodedResult> for IdType {
     type Error = Error;
@@ -264,7 +282,9 @@ impl TryFrom<&DecodedResult> for IdType {
         match decoded.hrp.as_str() {
             // Unwraps exist here because the length checks have already happened above.
             HRP_KEY => Ok(IdType::Key(decoded.dp[1..].try_into().unwrap())),
-            HRP_EXTERNAL => Ok(IdType::External(decoded.dp[1..].try_into().unwrap())),
+            HRP_EXTERNAL => Ok(IdType::External(Sha256Hash(
+                decoded.dp[1..].try_into().unwrap(),
+            ))),
             _ => unreachable!(),
         }
     }
@@ -279,9 +299,9 @@ impl From<PublicKey> for IdType {
 impl IdType {
     /// Create External from byte slice. Slice must be exactly 32 bytes long.
     pub fn from_sha256_hash(hash: &[u8]) -> Result<Self, Error> {
-        Ok(IdType::External(
+        Ok(IdType::External(Sha256Hash(
             hash.try_into().map_err(|_| Error::InvalidHashLength)?,
-        ))
+        )))
     }
 
     /// Get the human-readable part for this identifier type
@@ -402,7 +422,7 @@ fn encode_did_identifier(
 ) -> Result<String, Error> {
     let genesis_bytes = match &id_type {
         IdType::Key(key) => &key[..],
-        IdType::External(hash) => &hash[..],
+        IdType::External(Sha256Hash(hash)) => &hash[..],
     };
 
     // Build the data payload
@@ -432,7 +452,7 @@ mod tests {
         fn from(bytes: &[u8]) -> Self {
             match bytes.len() {
                 SECP256K1_COMPRESSED_KEY_LEN => IdType::Key(bytes.try_into().unwrap()),
-                SHA256_HASH_LEN => IdType::External(bytes.try_into().unwrap()),
+                SHA256_HASH_LEN => IdType::External(Sha256Hash(bytes.try_into().unwrap())),
                 _ => unreachable!(),
             }
         }

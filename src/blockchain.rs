@@ -1,7 +1,8 @@
 use crate::document::{ContemporaryDocument, InitialDocument, ResolutionOptions, SignalsMetadata};
-use crate::identifier::{Did, SHA256_HASH_LEN};
-use onlyerror::Error;
+use crate::identifier::{Did, Sha256Hash};
 use chrono::{DateTime, Utc};
+use onlyerror::Error;
+use std::collections::HashMap;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -14,12 +15,14 @@ pub enum Error {
 pub(crate) struct Traversal {
     did: Did,
     contemporary_doc: ContemporaryDocument,
-    contemporary_block_height: u32, // ?
+    contemporary_block_height: u32,
     current_version_id: u64,
-    target_condition: TargetCondition, // TODO: This may need both (what is the default for version_id???)
-    did_document_history: Vec<ContemporaryDocument>,
-    update_hash_history: Vec<[u8; SHA256_HASH_LEN]>, // TODO: We need a type alias or something for hashes
-    signals_metadata: Option<SignalsMetadata>,
+    target_condition: TargetCondition,
+    // TODO: We don't need to keep all of the documents.
+    // did_document_history: Vec<ContemporaryDocument>,
+    update_hash_history: Vec<Sha256Hash>,
+    // TODO: Use Txid instead of String
+    signals_metadata: HashMap<String, SignalsMetadata>,
 }
 
 impl Traversal {
@@ -33,17 +36,22 @@ impl Traversal {
             contemporary_block_height: 0,
             current_version_id: 1,
             target_condition: TargetCondition::from(resolution_options),
-            did_document_history: vec![],
+            // did_document_history: vec![],
             update_hash_history: vec![],
             signals_metadata: resolution_options
                 .sidecar_data
                 .as_ref()
-                .and_then(|sidecar_data| sidecar_data.signals_metadata.clone()),
+                .map(|sidecar_data| sidecar_data.signals_metadata.clone())
+                .unwrap_or_default(),
         }
     }
 
     // Spec section 4.2.2.1
-    fn traverse(&mut self) -> Result<Self, Error> {
+    fn traverse(&mut self) -> Result<ContemporaryDocument, Error> {
+        // Step 1.
+        let contemporary_hash = self.contemporary_doc.compute_hash(&self.did);
+
+        // Step 2.
         todo!();
     }
 }
@@ -59,11 +67,7 @@ impl From<&ResolutionOptions> for TargetCondition {
         if let Some(version) = resolution_options.version_id {
             Self::VersionId(version)
         } else {
-            Self::Time(
-                resolution_options
-                    .version_time
-                    .unwrap_or_else(Utc::now),
-            )
+            Self::Time(resolution_options.version_time.unwrap_or_else(Utc::now))
         }
     }
 }
