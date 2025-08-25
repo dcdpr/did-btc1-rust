@@ -1,3 +1,4 @@
+pub mod beacon;
 pub mod blockchain;
 pub mod cryptosuite;
 pub mod document;
@@ -5,7 +6,6 @@ pub mod error;
 pub mod identifier;
 pub mod key;
 pub mod proof;
-pub mod service;
 //pub mod suites;
 //pub mod transformation;
 pub mod verification;

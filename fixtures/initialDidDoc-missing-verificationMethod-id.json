@@ -29,9 +29,8 @@
   "capabilityDelegation": [
     "did:btc1:x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf#key-1"
   ],
-  "service": [
+  "beacon": [
     {
-      "id": "did:btc1:x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf#service-0",
       "type": "SingletonBeacon",
       "serviceEndpoint": "bitcoin:bcrt1qq8z7pfj4s3aelrwtrt8fk729744pv6qc47hxm3"
     }

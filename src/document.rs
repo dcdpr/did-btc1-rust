@@ -1,8 +1,10 @@
+use crate::beacon::AddressExt as _;
 use crate::error::{Btc1Error, ProblemDetails};
 use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, SHA256_HASH_LEN};
 use crate::key::{PublicKey, PublicKeyExt as _};
 use crate::verification::{VerificationMethod, VerificationMethodId};
-use crate::{proof::Proof, service::Service};
+use crate::{beacon::Beacon, proof::Proof};
+use bitcoin::Address;
 use chrono::{DateTime, Utc};
 use onlyerror::Error;
 use serde_json::{Map, Value, json};
@@ -66,9 +68,8 @@ pub enum Error {
     /// Verification Error
     Verification(#[from] crate::verification::Error),
 
-    /// Document service endpoints error
-    #[error("Document service endpoints error")]
-    Service(#[from] crate::service::Error),
+    /// Document beacon endpoints error
+    Beacon(#[from] crate::beacon::Error),
 
     /// DID:BTC1 error
     Btc1Error(#[from] Btc1Error),
@@ -108,7 +109,8 @@ struct DocumentFields<T> {
     capability_invocation: Vec<VerificationMethodId>,
     capability_delegation: Vec<VerificationMethodId>,
 
-    service: Vec<Service>,
+    // TODO: We really want one-or-more, not zero-or-more
+    beacon: Vec<Beacon>,
 }
 
 impl<T> TryFrom<&Value> for DocumentFields<T>
@@ -143,11 +145,16 @@ where
         let assertion_method = vec_from_value(value, "assertionMethod")?;
         let capability_invocation = vec_from_value(value, "capabilityInvocation")?;
         let capability_delegation = vec_from_value(value, "capabilityDelegation")?;
-        let service = vec_from_object(value, "service", |service| {
-            Ok(Service::new(
-                Some(string_from_object(service, "id")?.to_string()),
-                strings_from_object(service, "type")?,
-                strings_from_object(service, "serviceEndpoint")?,
+        let beacon = vec_from_object(value, "beacon", |beacon| {
+            Ok(Beacon::new(
+                string_from_object(beacon, "type")?.parse()?,
+                // TODO: Convert from did.components().network()
+                Address::from_bip21(
+                    string_from_object(beacon, "descriptor")?,
+                    bitcoin::Network::Regtest,
+                )?,
+                // TODO: Use TryInto instead of `as` ... Correctly handle non-u32 numbers.
+                int_from_object(beacon, "minimumConfirmationsRequired").map(|min| min as u32)?,
             )?)
         })?;
 
@@ -160,7 +167,7 @@ where
             assertion_method,
             capability_invocation,
             capability_delegation,
-            service,
+            beacon,
         })
     }
 }
@@ -291,6 +298,18 @@ fn string_from_object<'value>(value: &'value Value, key: &str) -> Result<&'value
     }
 }
 
+/// Returns value[key] as an int if it is a JSON number.
+fn int_from_object(value: &Value, key: &str) -> Result<i64, Error> {
+    let obj = &value[key];
+
+    if obj.is_null() {
+        Err(Error::JsonMissingElement(key.into()))
+    } else {
+        obj.as_i64()
+            .ok_or_else(|| Error::UnexpectedJsonType(key.into(), ExpectedType::Number))
+    }
+}
+
 /// Create a vector of any type from `value[key]` using a map function.
 fn vec_from_object<T, F>(value: &Value, key: &str, map_fn: F) -> Result<Vec<T>, Error>
 where
@@ -307,14 +326,6 @@ where
             .map(map_fn)
             .collect::<Result<Vec<_>, Error>>()
     }
-}
-
-/// Create a vector of one or more strings from `value[key]`.
-fn strings_from_object(value: &Value, key: &str) -> Result<Vec<String>, Error> {
-    let strings = vec_from_object(value, key, |s| string_from_value(s).map(String::from))
-        .or_else(|_| Ok::<_, Error>(vec![string_from_object(value, key)?.to_string()]))?;
-
-    Ok(strings)
 }
 
 /// Returns a string if the JSON value is a string type.
@@ -484,7 +495,7 @@ impl InitialDocument {
                 "assertionMethod": verification_method_ids,
                 "capabilityInvocation": verification_method_ids,
                 "capabilityDelegation": verification_method_ids,
-                "service": generate_beacon_services(did),
+                "beacon": generate_beacons(did),
             }),
         }
     }
@@ -622,7 +633,7 @@ fn find_and_replace(value: &mut Value, from: &str, to: &str) {
 }
 
 // Spec section 4.2.1.1.1
-fn generate_beacon_services(did: &Did) -> Value {
+fn generate_beacons(did: &Did) -> Value {
     let p2pkh_beacon = "TODO: Create P2PKH address from wallet";
     let p2wpkh_beacon = "TODO: Create P2WPKH address from wallet";
     let p2tr_beacon = "TODO: Create P2TR address from wallet";
@@ -653,13 +664,10 @@ mod tests {
 
     #[test]
     fn test_document_parse() {
-        let root = PathBuf::from(
-            "../did-btc1/TestVectors/mutinynet/k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp",
-        );
+        let path = PathBuf::from("./fixtures/exampleTargetDocument.json");
+        let doc = Document::from_file(path).unwrap();
 
-        let doc = Document::from_file(root.join("targetDocument.json")).unwrap();
-
-        assert_eq!(doc.fields.service.len(), 4);
+        assert_eq!(doc.fields.beacon.len(), 4);
         assert_eq!(doc.fields.verification_method.len(), 2);
     }
 
@@ -674,7 +682,7 @@ mod tests {
             ..Default::default()
         };
 
-        let did = "did:btc1:x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf"
+        let did = "did:btc1:x1qgestr7xmvjpddg0s56ncpsrt8dct8gnrm5kchhxw3meutpu2cwcxegf65v"
             .parse()
             .unwrap();
         let initial_doc = InitialDocument::resolve_external(&did, &resolution_options).unwrap();
@@ -709,11 +717,9 @@ mod tests {
 
     #[test]
     fn test_from_external_intermediate() {
-        let root = PathBuf::from(
-            "../did-btc1/TestVectors/regtest/x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf",
-        );
+        let root = PathBuf::from("fixtures");
         let intermediate_doc =
-            IntermediateDocument::from_file(root.join("intermediateDidDoc.json")).unwrap();
+            IntermediateDocument::from_file(root.join("external-intermediateDidDoc.json")).unwrap();
         let (did, initial_doc) = InitialDocument::from_external_intermediate(
             intermediate_doc,
             None,
@@ -721,10 +727,11 @@ mod tests {
         )
         .unwrap();
 
-        let expected_did = fs::read_to_string(root.join("did.txt")).unwrap();
+        let expected_did = fs::read_to_string(root.join("external-did.txt")).unwrap();
         assert_eq!(did.encode(), expected_did.trim());
 
-        let expected_doc = InitialDocument::from_file(root.join("initialDidDoc.json")).unwrap();
+        let expected_doc =
+            InitialDocument::from_file(root.join("external-initialDidDoc.json")).unwrap();
         assert_eq!(initial_doc, expected_doc);
     }
 }

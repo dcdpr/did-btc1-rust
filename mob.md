@@ -101,3 +101,16 @@ for next time:
 - Added several todo comments
 
 
+
+2025-08-24
+
+- Switched service to beacon
+- Beacon type is an enum
+- Beacon descriptor is a bitcoin::Address
+- Updated local tests documents (copied from `did-btc1` repo)
+
+for next time:
+
+- Add conversions for `crate::identifier::Network` <--> `bitcoin::Network`
+- Fix tests
+- More blockchain traversal
