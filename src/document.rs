@@ -17,6 +17,8 @@ const DID_BTC1_CONTEXT: &str = "https://did-btc1/TBD/context";
 const DID_PLACEHOLDER: &str =
     "did:btc1:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 
+const MIN_CONFIRMATIONS_REQUIRED: u32 = 6;
+
 #[derive(Debug)]
 pub enum ExpectedType {
     Number,
@@ -671,11 +673,11 @@ fn generate_beacons(
         .parse::<Address<_>>()?
         .require_network(network)?;
 
-    // TODO: Fix default min_confirmations_required
+    // TODO: Allow overriding the default minimum confirmations required in `ResolutionOptions`?
     Ok(vec![
-        Beacon::new(Type::Singleton, p2pkh_beacon, 6),
-        Beacon::new(Type::Singleton, p2wpkh_beacon, 6),
-        Beacon::new(Type::Singleton, p2tr_beacon, 6),
+        Beacon::new(Type::Singleton, p2pkh_beacon, MIN_CONFIRMATIONS_REQUIRED),
+        Beacon::new(Type::Singleton, p2wpkh_beacon, MIN_CONFIRMATIONS_REQUIRED),
+        Beacon::new(Type::Singleton, p2tr_beacon, MIN_CONFIRMATIONS_REQUIRED),
     ])
 }
 
