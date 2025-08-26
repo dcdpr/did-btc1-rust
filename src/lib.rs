@@ -13,7 +13,7 @@ pub mod verification;
 
 // Re-exports of key components
 pub use cryptosuite::CryptoSuite;
-pub use document::Document;
+pub use document::{Document, ResolutionOptions};
 pub use error::Error;
 pub use key::{KeyPair, PublicKey, SecretKey};
 pub use proof::{Proof, ProofOptions, ProofPurpose, VerificationResult};

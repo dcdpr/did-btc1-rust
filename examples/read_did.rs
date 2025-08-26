@@ -1,42 +1,34 @@
-use did_btc1::blockchain::TraversalFsm;
-use did_btc1::document::{Document, ResolutionOptions};
+use anyhow::Result;
+use did_btc1::blockchain::TraversalState;
+use did_btc1::{Document, ResolutionOptions};
 
-fn main() {
-    let did = "did:btc1:k1qgp5h79scv4sfqkzak5g6y89dsy3cq0pd2nussu2cm3zjfhn4ekwrucc4q7t7"
-        .parse()
-        .unwrap();
-
-    let mut traversal = Document::read(&did, ResolutionOptions::default()).unwrap();
-
+fn main() -> Result<()> {
     let agent = ureq::agent();
+    let did = "did:btc1:k1qgp5h79scv4sfqkzak5g6y89dsy3cq0pd2nussu2cm3zjfhn4ekwrucc4q7t7".parse()?;
+    let mut fsm = Document::read(&did, ResolutionOptions::default())?;
 
     // Drive the blockchain traversal state machine forward.
     loop {
-        match traversal.traverse() {
-            Ok(TraversalFsm::Init) => unreachable!(),
-
-            Ok(TraversalFsm::Request(requests)) => {
+        match fsm.traverse()? {
+            TraversalState::Requests(next_state, requests) => {
                 let responses = requests
                     .into_iter()
                     .map(|req| {
-                        let mut resp = agent.run(req).expect("request failed");
+                        let mut resp = agent.run(req)?;
 
-                        resp.body_mut().read_json().expect("JSON parse error")
+                        Ok(resp.body_mut().read_json()?)
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>>>()?;
 
-                traversal.process_responses(responses);
+                fsm = next_state.process_responses(responses);
             }
 
-            Ok(TraversalFsm::Resolved(contemporary_document)) => {
-                println!("Resolved document: {contemporary_document:#?}");
-                break;
-            }
-
-            Err(err) => {
-                eprintln!("{err:?}");
+            TraversalState::Resolved(document) => {
+                println!("Resolved document: {document:#?}");
                 break;
             }
         }
     }
+
+    Ok(())
 }
