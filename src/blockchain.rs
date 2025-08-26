@@ -1,11 +1,12 @@
-use crate::document::{ContemporaryDocument, InitialDocument, ResolutionOptions, SignalsMetadata};
-use crate::identifier::{Did, Sha256Hash};
+use crate::document::{InitialDocument, IntermediateDocument, ResolutionOptions, SignalsMetadata};
+use crate::{document::Document, identifier::Sha256Hash};
 use bitcoin::Txid;
 use chrono::{DateTime, Utc};
-use esploda::esplora::Transaction;
-use esploda::http::{Request, Response};
+use esploda::{Req, esplora::Transaction};
 use onlyerror::Error;
 use std::collections::HashMap;
+
+const DEFAULT_RPC_BASE_URL: &str = "https://blockstream.info/testnet/api";
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -16,17 +17,14 @@ pub enum Error {
 /// State machine for Bitcoin blockchain traversal.
 #[derive(Debug)]
 pub struct Traversal {
-    did: Did,
-    contemporary_doc: ContemporaryDocument,
+    contemporary_doc: InitialDocument,
     contemporary_block_height: u32,
     current_version_id: u64,
     target_condition: TargetCondition,
-    // TODO: We don't need to keep all of the documents.
-    // did_document_history: Vec<ContemporaryDocument>,
     update_hash_history: Vec<Sha256Hash>,
     // TODO: Use Txid instead of String
     signals_metadata: HashMap<String, SignalsMetadata>,
-
+    rpc_host: String,
     fsm: TraversalFsm,
 }
 
@@ -35,33 +33,46 @@ impl Traversal {
         initial_doc: InitialDocument,
         resolution_options: &ResolutionOptions,
     ) -> Self {
+        let sidecar_data = resolution_options.sidecar_data.as_ref();
+
         Self {
-            did: initial_doc.did.clone(),
-            contemporary_doc: initial_doc.into(),
+            contemporary_doc: initial_doc,
             contemporary_block_height: 0,
             current_version_id: 1,
             target_condition: TargetCondition::from(resolution_options),
-            // did_document_history: vec![],
             update_hash_history: vec![],
-            signals_metadata: resolution_options
-                .sidecar_data
-                .as_ref()
-                .map(|sidecar_data| sidecar_data.signals_metadata.clone())
+            signals_metadata: sidecar_data
+                .map(|data| data.signals_metadata.clone())
                 .unwrap_or_default(),
+            rpc_host: sidecar_data
+                .and_then(|data| data.blockchain_rpc_uri.as_deref())
+                .unwrap_or(DEFAULT_RPC_BASE_URL)
+                .to_string(),
             fsm: TraversalFsm::Init,
         }
     }
 
     // Spec section 4.2.2.1
     // TODO: Better name for this?
-    pub fn traverse(&mut self) -> Result<TraversalFsm, Error> {
-        // Step 1.
-        let contemporary_hash = self.contemporary_doc.compute_hash(&self.did);
+    pub fn traverse(&mut self) -> Result<TraversalState, Error> {
+        match &self.fsm {
+            TraversalFsm::Init => {
+                // Step 1.
+                let contemporary_hash =
+                    IntermediateDocument::from_initial(&self.contemporary_doc).compute_hash();
 
-        // Step 2, 3: unnecessary
+                // Step 2, 3: unnecessary
 
-        // Step 4.
-        Ok(TraversalFsm::Request(self.next_signals_requests()))
+                // Step 4.
+                self.fsm = TraversalFsm::Requests;
+
+                Ok(self.next_signals_requests())
+            }
+
+            TraversalFsm::Requests => {
+                todo!();
+            }
+        }
     }
 
     // Spec section 4.2.2.1
@@ -86,40 +97,38 @@ impl Traversal {
             .collect()
     }
 
-    fn next_signals_requests(&self) -> Vec<Request<()>> {
-        let base_url = "https://blockstream.info/testnet/api".to_string();
-
-        self.contemporary_doc
-            .beacon
-            .iter()
-            .map(|b| {
-                Request::builder()
-                    .uri(format!("{}/address/{}/txs", base_url, b.descriptor))
-                    .body(())
-                    .unwrap()
-            })
-            .collect()
+    fn next_signals_requests(&self) -> TraversalState {
+        TraversalState::Requests(
+            self.contemporary_doc
+                .beacon
+                .iter()
+                .map(|b| {
+                    Req::builder()
+                        .uri(format!("{}/address/{}/txs", self.rpc_host, b.descriptor))
+                        .body(())
+                        .unwrap()
+                })
+                .collect(),
+        )
     }
+}
+
+#[derive(Copy, Clone, Debug)]
+enum TraversalFsm {
+    /// FSM just initialized.
+    Init,
+
+    /// FSM is waiting for requests to be processed.
+    Requests,
 }
 
 #[derive(Clone, Debug)]
-pub enum TraversalFsm {
-    Init,
-    Request(Vec<Request<()>>),
-    Resolved(ContemporaryDocument),
-}
+pub enum TraversalState {
+    /// Requests need to be sent to the blockchain.
+    Requests(Vec<Req>),
 
-impl TraversalFsm {
-    fn traverse(self, traversal: &Traversal) -> Result<Self, Error> {
-        match self {
-            Self::Init => Ok(Self::Request(traversal.next_signals_requests())),
-
-            // TODO: There is a break condition between request/response...
-            Self::Request(_) => Ok(todo!()),
-
-            Self::Resolved(doc) => Ok(Self::Resolved(doc)),
-        }
-    }
+    /// Document is fully resolved.
+    Resolved(Box<Document>),
 }
 
 struct NextSignal {

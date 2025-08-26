@@ -1,16 +1,15 @@
-use crate::beacon::AddressExt as _;
+use crate::beacon::{AddressExt as _, Beacon};
 use crate::error::{Btc1Error, ProblemDetails};
 use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, Sha256Hash};
 use crate::key::{PublicKey, PublicKeyExt as _};
 use crate::verification::{VerificationMethod, VerificationMethodId};
-use crate::{beacon::Beacon, proof::Proof};
+use crate::{blockchain::Traversal, identifier::TryNetworkExt, proof::Proof};
 use bitcoin::Address;
 use chrono::{DateTime, Utc};
 use onlyerror::Error;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, fmt::Display, fs, path::Path, str::FromStr};
-use crate::blockchain::Traversal;
 
 const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
 const DID_BTC1_CONTEXT: &str = "https://did-btc1/TBD/context";
@@ -78,7 +77,10 @@ pub enum Error {
     /// This should not happen
     Infallible(#[from] std::convert::Infallible),
 
-    // Unexpected Did
+    /// Bitcoin address parse error
+    AddressParse(#[from] bitcoin::address::ParseError),
+
+    /// Unexpected DID
     #[error("Expected `{0}` but found `{1}`")]
     UnexpectedDid(String, String),
 }
@@ -118,44 +120,49 @@ struct DocumentFields<T> {
     beacon: Vec<Beacon>,
 }
 
-/// Parse document fields with type checking.
-///
-/// Exists as a macro to DRY.
-macro_rules! parse_document_fields {
-    ($value:ident, $network:expr) => {{
-        let id = string_from_object($value, "id")?.parse()?;
+impl<T> TryFrom<(&Value, Option<Network>)> for DocumentFields<T>
+where
+    T: FromStr + TryNetworkExt,
+    VerificationMethodId: FromStr,
+    Error: From<<T as FromStr>::Err> + From<<VerificationMethodId as FromStr>::Err>,
+{
+    type Error = Error;
+
+    fn try_from((value, network): (&Value, Option<Network>)) -> Result<Self, Self::Error> {
+        let id: T = string_from_object(value, "id")?.parse()?;
+        let network = id.try_network().or(network).unwrap();
 
         // TODO: Might want to abstract this null-check for required keys.
-        if $value["@context"].is_null() {
+        if value["@context"].is_null() {
             return Err(Error::JsonMissingElement("@context".into()));
         }
-        let context = vec_from_object($value, "@context", |id| {
+        let context = vec_from_object(value, "@context", |id| {
             string_from_value(id).map(ToString::to_string)
         })?;
 
         // TODO: All of these are optional. Only `vec_from_value` has been fixed
-        let controller = vec_from_value($value, "controller")?;
-        let verification_method = vec_from_object($value, "verificationMethod", |method| {
+        let controller = vec_from_value(value, "controller")?;
+        let verification_method = vec_from_object(value, "verificationMethod", |method| {
             Ok(VerificationMethod::new(
                 string_from_object(method, "id")?.parse()?,
                 string_from_object(method, "controller")?.parse()?,
                 PublicKey::from_multikey(string_from_object(method, "publicKeyMultibase")?)?,
             ))
         })?;
-        let authentication = vec_from_value($value, "authentication")?;
-        let assertion_method = vec_from_value($value, "assertionMethod")?;
-        let capability_invocation = vec_from_value($value, "capabilityInvocation")?;
-        let capability_delegation = vec_from_value($value, "capabilityDelegation")?;
-        let beacon = vec_from_object($value, "beacon", |beacon| {
+        let authentication = vec_from_value(value, "authentication")?;
+        let assertion_method = vec_from_value(value, "assertionMethod")?;
+        let capability_invocation = vec_from_value(value, "capabilityInvocation")?;
+        let capability_delegation = vec_from_value(value, "capabilityDelegation")?;
+        let beacon = vec_from_object(value, "beacon", |beacon| {
             Ok(Beacon::new(
                 string_from_object(beacon, "type")?.parse()?,
-                Address::from_bip21(string_from_object(beacon, "descriptor")?, $network)?,
+                Address::from_bip21(string_from_object(beacon, "descriptor")?, network)?,
                 // TODO: Use TryInto instead of `as` ... Correctly handle non-u32 numbers.
                 int_from_object(beacon, "minimumConfirmationsRequired").map(|min| min as u32)?,
             ))
         })?;
 
-        DocumentFields {
+        Ok(DocumentFields {
             id,
             context,
             controller,
@@ -165,41 +172,7 @@ macro_rules! parse_document_fields {
             capability_invocation,
             capability_delegation,
             beacon,
-        }
-    }};
-}
-
-/// Stringly-typed document fields for intermediate documents.
-impl TryFrom<(&Value, Network)> for DocumentFields<String>
-where
-    VerificationMethodId: FromStr,
-    Error: From<<VerificationMethodId as FromStr>::Err>,
-{
-    type Error = Error;
-
-    fn try_from((value, network): (&Value, Network)) -> Result<Self, Self::Error> {
-        Ok(parse_document_fields!(value, network))
-    }
-}
-
-/// Strictly-typed document fields for all other documents.
-impl TryFrom<(&Value, &Did)> for DocumentFields<Did>
-where
-    VerificationMethodId: FromStr,
-    Error: From<<Did as FromStr>::Err> + From<<VerificationMethodId as FromStr>::Err>,
-{
-    type Error = Error;
-
-    fn try_from((value, did): (&Value, &Did)) -> Result<Self, Self::Error> {
-        let doc: DocumentFields<Did> = parse_document_fields!(value, did.components().network());
-        if doc.id != *did {
-            Err(Error::UnexpectedDid(
-                did.encode().to_string(),
-                doc.id.encode().to_string(),
-            ))
-        } else {
-            Ok(doc)
-        }
+        })
     }
 }
 
@@ -229,9 +202,6 @@ pub struct ResolutionOptions {
 
     /// Data necessary for resolving a DID such as DID Update Payloads and SMT proofs
     pub sidecar_data: Option<SidecarData>,
-
-    /// The bitcoin network used for resolution
-    pub network: Option<Network>,
 }
 
 #[derive(Debug, Default)]
@@ -240,20 +210,30 @@ pub struct SidecarData {
 
     // TODO: Use Txid instead of String
     pub signals_metadata: HashMap<String, SignalsMetadata>,
+
+    // TODO: Using the `url` crate is probably better.
+    /// Blockchain RPC URI.
+    ///
+    /// Must be provided as a full URI including schema and domain:
+    /// `https://esplora.example/testnet`.
+    ///
+    /// This can be used to override the hostname used in `Request`s returned by the [`Traversal`]
+    /// FSM.
+    pub blockchain_rpc_uri: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct SignalsMetadata {
-    btc1_update: Option<Update>,
-    proofs: SmtProofs,
+    pub btc1_update: Option<Update>,
+    pub proofs: SmtProofs,
 }
 
 // Placeholders
 pub struct DocumentPatch;
 #[derive(Clone, Debug)]
-struct Update;
+pub struct Update;
 #[derive(Clone, Debug)]
-struct SmtProofs;
+pub struct SmtProofs;
 
 impl Document {
     // Spec section 4.1.1
@@ -268,13 +248,10 @@ impl Document {
     // TODO: Sans-I/O: This needs to not bake any I/O into the implementation. Instead, this should
     // return a finite state machine that represents the protocol described in the spec. This allows
     // the caller to do their own I/O and drive the state machine forward to `Document` resolution.
-    pub fn read<O>(did: &Did, resolution_options: O) -> Result<Traversal, Error>
-    where
-        O: Into<ResolutionOptions>,
-    {
-        let resolution_options = resolution_options.into();
+    pub fn read(did: &Did, resolution_options: ResolutionOptions) -> Result<Traversal, Error> {
         let initial_document = InitialDocument::from_did(did, &resolution_options)?;
-        Self::resolve(initial_document, &resolution_options)
+
+        Ok(Self::resolve(initial_document, &resolution_options))
     }
 
     // Spec section 4.3
@@ -316,13 +293,10 @@ impl Document {
     fn resolve(
         initial_document: InitialDocument,
         resolution_options: &ResolutionOptions,
-    ) -> Result<Traversal, Error> {
+    ) -> Traversal {
         // TODO: We need a way to capture Spec section 4.2.2, step 6
-        // The will be resolved by identifying the expected default value for ResolutionOptions::version_id
-        let blockchain_traversal =
-            crate::blockchain::Traversal::new(initial_document, resolution_options);
-
-        Ok(blockchain_traversal)
+        // This will be resolved by identifying the expected default value for ResolutionOptions::version_id
+        crate::blockchain::Traversal::new(initial_document, resolution_options)
     }
 }
 
@@ -384,20 +358,20 @@ where
 
 impl Document {
     /// Load a document from a file
-    pub fn from_file<P: AsRef<Path>>(path: P, did: &Did) -> Result<Self, Error> {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let content = fs::read_to_string(path)?;
-        Self::from_json_string(&content, did)
+        Self::from_json_string(&content)
     }
 
     /// Create a document from a JSON string
-    pub fn from_json_string(json: &str, did: &Did) -> Result<Self, Error> {
+    pub fn from_json_string(json: &str) -> Result<Self, Error> {
         let value: Value = serde_json::from_str(json)?;
-        Self::from_json_value(value, did)
+        Self::from_json_value(value)
     }
 
     /// Create a document from a JSON Value
-    pub fn from_json_value(value: Value, did: &Did) -> Result<Self, Error> {
-        let fields = DocumentFields::try_from((&value, did))?;
+    pub fn from_json_value(value: Value) -> Result<Self, Error> {
+        let fields = DocumentFields::try_from((&value, None))?;
 
         match value {
             Value::Object(map) => Ok(Self { fields, data: map }),
@@ -460,20 +434,20 @@ pub struct InitialDocument {
 
 impl InitialDocument {
     /// Load an initial document from a file
-    pub fn from_file<P: AsRef<Path>>(path: P, did: &Did) -> Result<Self, Error> {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let content = fs::read_to_string(path)?;
-        Self::from_json_string(&content, did)
+        Self::from_json_string(&content)
     }
 
     /// Create an initial document from a JSON string
-    pub fn from_json_string(json: &str, did: &Did) -> Result<Self, Error> {
+    pub fn from_json_string(json: &str) -> Result<Self, Error> {
         let value: Value = serde_json::from_str(json)?;
-        Self::from_json_value(value, did)
+        Self::from_json_value(value)
     }
 
     /// Create an initial document from a JSON Value
-    pub fn from_json_value(value: Value, did: &Did) -> Result<Self, Error> {
-        let doc = Document::from_json_value(value, did)?;
+    pub fn from_json_value(value: Value) -> Result<Self, Error> {
+        let doc = Document::from_json_value(value)?;
 
         Ok(Self {
             did: doc.fields.id,
@@ -513,18 +487,21 @@ impl InitialDocument {
     /// Create an initial document from an existing DID.
     pub fn from_did(did: &Did, resolution_options: &ResolutionOptions) -> Result<Self, Error> {
         match did.components().id_type() {
-            IdType::Key(_) => Ok(Self::deterministically_generate(did)),
+            IdType::Key(_) => Self::deterministically_generate(did, resolution_options),
             IdType::External(_) => Self::resolve_external(did, resolution_options),
         }
     }
 
     // Spec section 4.2.1.1
-    fn deterministically_generate(did: &Did) -> Self {
+    fn deterministically_generate(
+        did: &Did,
+        resolution_options: &ResolutionOptions,
+    ) -> Result<Self, Error> {
         let verification_method_id = format!("{}#initialKey", did.encode());
         let verification_method_ids = json!([verification_method_id]);
-        let beacon = generate_beacons(did);
+        let beacon = generate_beacons(did, resolution_options)?;
 
-        Self {
+        Ok(Self {
             did: did.clone(),
             beacon: beacon.clone(),
             json_data: json!({
@@ -542,7 +519,7 @@ impl InitialDocument {
                 "capabilityDelegation": verification_method_ids,
                 "beacon": beacon.into_iter().map(Beacon::into_json).collect::<Vec<_>>(),
             }),
-        }
+        })
     }
 
     // Spec section 4.2.1.2
@@ -567,7 +544,7 @@ impl InitialDocument {
 
     // Spec section 4.2.1.2.1
     fn sidecar_initial_validation(&self, did: &Did) -> Result<Self, Error> {
-        let intermediate_doc = IntermediateDocument::from_initial(did, self);
+        let intermediate_doc = IntermediateDocument::from_initial(self);
 
         // Canonicalize the JSON doc to get a hash
         // todo: need to use RDFC canonicalization instead
@@ -612,7 +589,7 @@ impl IntermediateDocument {
     /// Create an intermediate document from a JSON Value
     pub fn from_json_value(value: Value, network: Network) -> Result<Self, Error> {
         // validate structural integrity
-        let fields = DocumentFields::<String>::try_from((&value, network))?;
+        let fields = DocumentFields::<String>::try_from((&value, Some(network)))?;
 
         Ok(Self {
             beacon: fields.beacon,
@@ -632,10 +609,10 @@ impl IntermediateDocument {
         }
     }
 
-    fn from_initial(did: &Did, initial_doc: &InitialDocument) -> Self {
+    pub(crate) fn from_initial(initial_doc: &InitialDocument) -> Self {
         // Find and replace all DIDs with the DID placeholder string.
         let mut json_data = initial_doc.json_data.clone();
-        find_and_replace(&mut json_data, did.encode(), DID_PLACEHOLDER);
+        find_and_replace(&mut json_data, initial_doc.did.encode(), DID_PLACEHOLDER);
 
         Self {
             beacon: initial_doc.beacon.clone(),
@@ -643,48 +620,11 @@ impl IntermediateDocument {
         }
     }
 
-    // TODO: This is just a duplicate of `from_initial()`
-    fn from_contemporary(did: &Did, contemporary_doc: &ContemporaryDocument) -> Self {
-        // Find and replace all DIDs with the DID placeholder string.
-        let mut json_data = contemporary_doc.json_data.clone();
-        find_and_replace(&mut json_data, did.encode(), DID_PLACEHOLDER);
-
-        Self {
-            beacon: contemporary_doc.beacon.clone(),
-            json_data,
-        }
-    }
-
-    fn compute_hash(&self) -> Sha256Hash {
+    pub(crate) fn compute_hash(&self) -> Sha256Hash {
         let jcs = serde_jcs::to_string(&self.json_data).expect("JSON is always valid JCS");
         let hash_bytes = Sha256::digest(jcs.as_bytes());
 
         Sha256Hash(hash_bytes[..].try_into().unwrap())
-    }
-}
-
-/// Representation of contemporary DID document, according to did::btc1 specification.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContemporaryDocument {
-    pub(crate) did: Did,
-    // TODO: We really want one-or-more, not zero-or-more
-    pub(crate) beacon: Vec<Beacon>,
-    json_data: Value,
-}
-
-impl From<InitialDocument> for ContemporaryDocument {
-    fn from(initial_document: InitialDocument) -> Self {
-        Self {
-            did: initial_document.did,
-            beacon: initial_document.beacon,
-            json_data: initial_document.json_data,
-        }
-    }
-}
-
-impl ContemporaryDocument {
-    pub(crate) fn compute_hash(&self, did: &Did) -> Sha256Hash {
-        IntermediateDocument::from_contemporary(did, self).compute_hash()
     }
 }
 
@@ -708,35 +648,33 @@ fn find_and_replace(value: &mut Value, from: &str, to: &str) {
 }
 
 // Spec section 4.2.1.1.1
-fn generate_beacons(did: &Did) -> Vec<Beacon> {
+fn generate_beacons(
+    did: &Did,
+    resolution_options: &ResolutionOptions,
+) -> Result<Vec<Beacon>, Error> {
     use crate::beacon::Type;
 
-    // TODO: No unwrap
-    let network = did.components().network().try_into().unwrap();
+    let network = did.components().network().try_into()?;
 
     // TODO: Fix address generation
+    // We need some kind of `Wallet` trait that can generate addresses
+    // passed in through `ResolutionOptions`
     let p2pkh_beacon = "TODO: Create P2PKH address from wallet"
-        .parse::<Address<_>>()
-        .unwrap()
-        .require_network(network)
-        .unwrap();
+        .parse::<Address<_>>()?
+        .require_network(network)?;
     let p2wpkh_beacon = "TODO: Create P2WPKH address from wallet"
-        .parse::<Address<_>>()
-        .unwrap()
-        .require_network(network)
-        .unwrap();
+        .parse::<Address<_>>()?
+        .require_network(network)?;
     let p2tr_beacon = "TODO: Create P2TR address from wallet"
-        .parse::<Address<_>>()
-        .unwrap()
-        .require_network(network)
-        .unwrap();
+        .parse::<Address<_>>()?
+        .require_network(network)?;
 
     // TODO: Fix default min_confirmations_required
-    vec![
+    Ok(vec![
         Beacon::new(Type::Singleton, p2pkh_beacon, 6),
         Beacon::new(Type::Singleton, p2wpkh_beacon, 6),
         Beacon::new(Type::Singleton, p2tr_beacon, 6),
-    ]
+    ])
 }
 
 #[cfg(test)]
@@ -747,10 +685,7 @@ mod tests {
     #[test]
     fn test_document_parse() {
         let path = PathBuf::from("./fixtures/exampleTargetDocument.json");
-        let did = "did:btc1:k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp"
-            .parse()
-            .unwrap();
-        let doc = Document::from_file(path, &did).unwrap();
+        let doc = Document::from_file(path).unwrap();
 
         assert_eq!(doc.fields.beacon.len(), 4);
         assert_eq!(doc.fields.verification_method.len(), 2);
@@ -759,13 +694,10 @@ mod tests {
     #[test]
     fn test_sidecar_initial_validation() {
         let path = "./fixtures/initialDidDoc.json";
-        let did = "did:btc1:x1qgestr7xmvjpddg0s56ncpsrt8dct8gnrm5kchhxw3meutpu2cwcxegf65v"
-            .parse()
-            .unwrap();
         let resolution_options = ResolutionOptions {
             sidecar_data: Some(SidecarData {
-                initial_document: Some(InitialDocument::from_file(path, &did).unwrap()),
-                signals_metadata: HashMap::default(),
+                initial_document: Some(InitialDocument::from_file(path).unwrap()),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -780,11 +712,8 @@ mod tests {
     #[test]
     fn test_document_validation_missing_elements() {
         let path = "./fixtures/initialDidDoc-missing-verificationMethod-id.json";
-        let did = "did:btc1:x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf"
-            .parse()
-            .unwrap();
         assert!(matches!(
-            InitialDocument::from_file(path, &did),
+            InitialDocument::from_file(path),
             Err(Error::JsonMissingElement(key)) if key == "id"
         ));
     }
@@ -826,7 +755,7 @@ mod tests {
         assert_eq!(did.encode(), expected_did.trim());
 
         let expected_doc =
-            InitialDocument::from_file(root.join("external-initialDidDoc.json"), &did).unwrap();
+            InitialDocument::from_file(root.join("external-initialDidDoc.json")).unwrap();
         assert_eq!(initial_doc, expected_doc);
     }
 }

@@ -95,6 +95,14 @@ pub enum Error {
     InvalidHashLength,
 }
 
+pub trait TryNetworkExt {
+    fn try_network(&self) -> Option<Network> {
+        None
+    }
+}
+
+impl TryNetworkExt for String {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Did {
     encoded: String,
@@ -148,6 +156,12 @@ impl Did {
             IdType::Key(key) => PublicKey::from_slice(&key).unwrap(),
             IdType::External(_) => unreachable!(), // todo: parse don't validate
         }
+    }
+}
+
+impl TryNetworkExt for Did {
+    fn try_network(&self) -> Option<Network> {
+        Some(self.components.network)
     }
 }
 

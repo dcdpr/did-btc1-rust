@@ -1,62 +1,35 @@
 [package]
 name = "did-btc1"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-description = "Implementation of DID:BTC1"
-
-
-[dependencies]
-serde.workspace = true
-serde_json.workspace = true
-onlyerror.workspace = true
-secp256k1.workspace = true
-sha2.workspace = true
-multibase.workspace = true
-serde_jcs.workspace = true
-bech32-rust = { path = "../bech32-rust" }
-json-patch = "1.0"
-uuid = { version = "1.0", features = ["v4"] }
-base58 = "0.2"
-hex = "0.4.3"
-rand = "0.8"
-urlencoding = "2.1"
-chrono = "0.4"
-bitcoin.workspace = true
-esploda.workspace = true
-
-[dev-dependencies]
-tempfile = "3.8"
-ureq.workspace = true
-
-
-[workspace]
-resolver = "2"
-
-[workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+description = "Implementation of DID:BTC1"
 repository = "git@gl1.dcdpr.com:dcd/did-btc1-rust.git"
-authors = ["Dan Pape <dpape@dpape.com>"]
+authors = ["Dan Pape <dpape@dpape.com>", "Jay Oster <jay@blipjoy.com>"]
 
-[workspace.dependencies]
-# Shared dependencies across all crates
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+hex = "0.4"
 onlyerror = "0.1"
-tokio = { version = "1.0", features = ["full"] }
-ureq = { version = "3.1", features = ["json"] }
-
-# Cryptography
-secp256k1 = { version = "0.30", features = ["serde", "rand"] }
-sha2 = "0.10"
-multibase = "0.9"
-
-# Bitcoin
-bitcoin = "0.32"
-esploda = "0.2"
+rand = "0.8"
 
 # JSON processing
+json-patch = "1"
+serde = { version = "1", features = ["derive"] }
 serde_jcs = "0.1"
+serde_json = "1"
 
+# Cryptography
+base58 = "0.2"
+multibase = "0.9"
+secp256k1 = { version = "0.30", features = ["rand"] }
+sha2 = "0.10"
+
+# Bitcoin
+bech32-rust = { path = "../bech32-rust" }
+bitcoin = { version = "0.32", default-features = false, features = ["std"] }
+esploda = "0.2"
+
+[dev-dependencies]
+anyhow = "1"
+ureq = { version = "3", features = ["json"] }
