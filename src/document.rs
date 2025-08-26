@@ -96,10 +96,10 @@ impl ProblemDetails for Error {
 
 /// Fully parsed and validated DID document fields.
 ///
-/// The DID identifier is allowed to be either [`Did`] or [`String`]. This specifically allows
-/// parsing intermediate DID documents with the "xxx" DID placeholders.
+/// The DID identifier can be either [`Did`] or [`String`]. This specifically allows parsing
+/// intermediate DID documents with the "xxx" DID placeholders.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DocumentFields<T> {
+pub(crate) struct DocumentFields<T> {
     /// DID identifier
     id: T,
 
@@ -117,7 +117,7 @@ struct DocumentFields<T> {
     capability_delegation: Vec<VerificationMethodId>,
 
     // TODO: We really want one-or-more, not zero-or-more
-    beacon: Vec<Beacon>,
+    pub(crate) beacon: Vec<Beacon>,
 }
 
 impl<T> TryFrom<(&Value, Option<Network>)> for DocumentFields<T>
@@ -176,15 +176,6 @@ where
     }
 }
 
-/// Represents a JSON or JSON-LD document
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Document {
-    /// All structural Document fields
-    fields: DocumentFields<Did>,
-    /// The document data as a JSON Value
-    data: Map<String, Value>,
-}
-
 /// DID document resolution options.
 #[derive(Debug, Default)]
 pub struct ResolutionOptions {
@@ -234,6 +225,15 @@ pub struct DocumentPatch;
 pub struct Update;
 #[derive(Clone, Debug)]
 pub struct SmtProofs;
+
+/// Represents a JSON or JSON-LD document
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Document {
+    /// All structural Document fields
+    fields: DocumentFields<Did>,
+    /// The document data as a JSON Value
+    data: Map<String, Value>,
+}
 
 impl Document {
     // Spec section 4.1.1
@@ -423,12 +423,22 @@ impl Document {
     }
 }
 
+impl From<InitialDocument> for Document {
+    fn from(doc: InitialDocument) -> Self {
+        Self {
+            fields: doc.fields,
+            data: match doc.json_data {
+                Value::Object(map) => map,
+                _ => unreachable!(),
+            },
+        }
+    }
+}
+
 /// Representation of initial DID document, according to did::btc1 specification.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitialDocument {
-    pub(crate) did: Did,
-    // TODO: We really want one-or-more, not zero-or-more
-    pub(crate) beacon: Vec<Beacon>,
+    pub(crate) fields: DocumentFields<Did>,
     json_data: Value,
 }
 
@@ -450,8 +460,7 @@ impl InitialDocument {
         let doc = Document::from_json_value(value)?;
 
         Ok(Self {
-            did: doc.fields.id,
-            beacon: doc.fields.beacon,
+            fields: doc.fields,
             json_data: Value::Object(doc.data),
         })
     }
@@ -501,25 +510,21 @@ impl InitialDocument {
         let verification_method_ids = json!([verification_method_id]);
         let beacon = generate_beacons(did, resolution_options)?;
 
-        Ok(Self {
-            did: did.clone(),
-            beacon: beacon.clone(),
-            json_data: json!({
-                "id": did.encode(),
-                "@context": [DID_CORE_V1_1_CONTEXT, DID_BTC1_CONTEXT],
-                "verificationMethod": [{
-                    "id": verification_method_id,
-                    "type": "MultiKey",
-                    "controller": did.encode(),
-                    "publicKeyMultibase": did.public_key_unchecked().to_multikey(),
-                }],
-                "authentication": verification_method_ids,
-                "assertionMethod": verification_method_ids,
-                "capabilityInvocation": verification_method_ids,
-                "capabilityDelegation": verification_method_ids,
-                "beacon": beacon.into_iter().map(Beacon::into_json).collect::<Vec<_>>(),
-            }),
-        })
+        Self::from_json_value(json!({
+            "id": did.encode(),
+            "@context": [DID_CORE_V1_1_CONTEXT, DID_BTC1_CONTEXT],
+            "verificationMethod": [{
+                "id": verification_method_id,
+                "type": "MultiKey",
+                "controller": did.encode(),
+                "publicKeyMultibase": did.public_key_unchecked().to_multikey(),
+            }],
+            "authentication": verification_method_ids,
+            "assertionMethod": verification_method_ids,
+            "capabilityInvocation": verification_method_ids,
+            "capabilityDelegation": verification_method_ids,
+            "beacon": beacon.into_iter().map(Beacon::into_json).collect::<Vec<_>>(),
+        }))
     }
 
     // Spec section 4.2.1.2
@@ -602,20 +607,17 @@ impl IntermediateDocument {
         let mut json_data = self.json_data.clone();
         find_and_replace(&mut json_data, DID_PLACEHOLDER, did.encode());
 
-        InitialDocument {
-            did: did.clone(),
-            beacon: self.beacon,
-            json_data,
-        }
+        InitialDocument::from_json_value(json_data).unwrap()
     }
 
     pub(crate) fn from_initial(initial_doc: &InitialDocument) -> Self {
         // Find and replace all DIDs with the DID placeholder string.
+        let did = &initial_doc.fields.id;
         let mut json_data = initial_doc.json_data.clone();
-        find_and_replace(&mut json_data, initial_doc.did.encode(), DID_PLACEHOLDER);
+        find_and_replace(&mut json_data, did.encode(), DID_PLACEHOLDER);
 
         Self {
-            beacon: initial_doc.beacon.clone(),
+            beacon: initial_doc.fields.beacon.clone(),
             json_data,
         }
     }
@@ -706,7 +708,7 @@ mod tests {
             .parse()
             .unwrap();
         let initial_doc = InitialDocument::resolve_external(&did, &resolution_options).unwrap();
-        assert_eq!(initial_doc.did, did);
+        assert_eq!(initial_doc.fields.id, did);
     }
 
     #[test]
