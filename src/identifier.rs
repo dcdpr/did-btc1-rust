@@ -38,9 +38,8 @@
 
 use bech32_rust::{Bech32Error, DecodedResult, decode, encode};
 use onlyerror::Error;
+use secp256k1::PublicKey;
 use std::str::FromStr;
-
-use crate::PublicKey;
 
 /// The DID method prefix for BTC1 identifiers
 pub const DID_BTC1_PREFIX: &str = "did:btc1:";

@@ -3,6 +3,17 @@ use onlyerror::Error;
 use secp256k1::Secp256k1;
 pub use secp256k1::{PublicKey, SecretKey};
 
+/// Multikey prefix specified by [Data Integrity BIP340 Cryptosuites]
+///
+/// [Data Integrity BIP340 Cryptosuites]: https://dcdpr.github.io/data-integrity-schnorr-secp256k1/#multikey
+const MULTIKEY_PREFIX: [u8; 2] = [0xe7, 0x01];
+
+// TODO: This a prefix from an old version of the specification changed in [#14].
+// `./fixtures/exampleTargetDocument.json` uses this for its "publicKeyMultibase".
+//
+// [#14]: https://github.com/dcdpr/data-integrity-schnorr-secp256k1/pull/14
+const OLD_MULTIKEY_PREFIX: [u8; 2] = [0xe1, 0x4a];
+
 #[derive(Error, Debug)]
 pub enum Error {
     /// Failed to create public key from bytes
@@ -48,7 +59,8 @@ impl PublicKeyExt for PublicKey {
             base58::FromBase58::from_base58(&multikey[1..]).map_err(|_| Error::MultikeyBase58)?;
 
         // Check prefix
-        if data.len() < 2 || data[0] != 0xe7 || data[1] != 0x01 {
+        // TODO: Remove `OLD_MULTIKEY_PREFIX` when the test vectors are fixed.
+        if data.len() < 2 || (data[0..2] != MULTIKEY_PREFIX && data[0..2] != OLD_MULTIKEY_PREFIX) {
             return Err(Error::MultikeyPrefix);
         }
 
