@@ -1,5 +1,7 @@
+use crate::document::{Document, Update};
 use crate::document::{InitialDocument, IntermediateDocument, ResolutionOptions, SignalsMetadata};
-use crate::{document::Document, identifier::Sha256Hash};
+use crate::identifier::Sha256Hash;
+use crate::beacon::Type as BeaconType;
 use chrono::{DateTime, Utc};
 use esploda::esplora::{Status, Transaction};
 use esploda::{Req, bitcoin::Txid};
@@ -17,6 +19,9 @@ pub enum Error {
 
     /// Spec section 4.2.2.4
     UpdateNotDuplicate,
+
+    /// Sidecar data not found
+    SidecarDataNotFound,
 }
 
 /// State machine for Bitcoin blockchain traversal.
@@ -27,8 +32,7 @@ pub struct Traversal<T = ()> {
     current_version_id: u64,
     target_condition: TargetCondition,
     update_hash_history: Vec<Sha256Hash>,
-    // TODO: Use Txid instead of String
-    signals_metadata: HashMap<String, SignalsMetadata>,
+    signals_metadata: HashMap<Txid, SignalsMetadata>,
     rpc_host: String,
 
     // Finite State Machine
@@ -75,7 +79,7 @@ impl Traversal {
         }
     }
 
-    // Spec section 4.2.2.1
+    // Spec section 5.2.2.1
     // TODO: Better name for this?
     pub fn traverse(mut self) -> Result<TraversalState, Error> {
         // Take the FSM state, leaving the default in its place.
@@ -116,6 +120,8 @@ impl Traversal {
                 self.contemporary_block_height = next_signals[0].block_height;
 
                 // Step 8.
+                self.process_beacon_signals(next_signals);
+
                 todo!()
             }
 
@@ -123,7 +129,7 @@ impl Traversal {
         }
     }
 
-    // Spec section 4.2.2.2
+    // Spec section 5.2.2.2
     fn find_next_signals(&self, transactions: Vec<Transaction>) -> Vec<NextSignal> {
         self.contemporary_doc
             .fields
@@ -169,6 +175,24 @@ impl Traversal {
 
         TraversalState::Requests(Traversal::from_init(self), requests)
     }
+
+    // Spec section 5.2.2.3
+    fn process_beacon_signals(&self, beacon_signals: Vec<NextSignal>) -> Result<Vec<Update>, Error> {
+        // Step 1.
+        // Step 2.
+        for beacon_signal in beacon_signals {
+            // Step 2.1 - 2.4
+            let signal_metadata = self.signals_metadata.get(&beacon_signal.tx).ok_or(Error::SidecarDataNotFound)?;
+
+            match beacon_signal.beacon_type {
+                BeaconType::Singleton => todo!(),
+                BeaconType::Map => todo!(),
+                BeaconType::SparseMerkleTree => todo!(),
+            }
+        }
+
+        todo!()
+    }
 }
 
 impl Traversal<WaitingForResponses> {
@@ -186,7 +210,7 @@ impl Traversal<WaitingForResponses> {
         }
     }
 
-    pub fn process_responses(mut self, transactions: Vec<Transaction>) -> Traversal<()> {
+    pub fn process_responses(mut self, transactions: Vec<Transaction>) -> Traversal {
         self.fsm = TraversalFsm::FindNextSignals(transactions);
 
         Traversal::from_waiting_for_responses(self)
@@ -239,5 +263,51 @@ impl From<&ResolutionOptions> for TargetCondition {
         } else {
             Self::Time(resolution_options.version_time.unwrap_or_else(Utc::now))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_traversal() {
+        let path = "./fixtures/exampleTargetDocument.json";
+        let initial_document = InitialDocument::from_file(path).unwrap();
+
+        let fsm = Traversal::new(initial_document, &ResolutionOptions::default());
+
+        let TraversalState::Requests(next_state, requests) = fsm.traverse().unwrap() else {
+            unreachable!()
+        };
+
+        let request_urls = requests
+            .into_iter()
+            .map(|req| req.uri().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            request_urls,
+            [
+                "https://blockstream.info/testnet/api/address/mtA1SshFsJtD2Di1KBSTmyuD23eBqUekQ3/txs",
+                "https://blockstream.info/testnet/api/address/tb1q323c0l0fapjeg4ux9ayumnpqh8xzqgk3wg82dy/txs",
+                "https://blockstream.info/testnet/api/address/tb1pecc8w64wdvn6x2np8yr8qvsz2pclydkd9t5jde2gf0hy0musfxxsn23q20/txs",
+                "https://blockstream.info/testnet/api/address/tb1qcs60r4j6ema8x4gf07hgt83x45e650dr97q3qv/txs"
+            ]
+        );
+
+        let json = include_str!("../fixtures/exampleTargetDocument-transactions.json");
+        let transactions: Vec<Transaction> = serde_json::from_str(json).unwrap();
+
+        let fsm = next_state.process_responses(transactions);
+
+        // todo: this will panic at step 8 above in traverse()
+        // let TraversalState::Resolved(document) = fsm.traverse().unwrap() else {
+        //     unreachable!()
+        // };
+
+        // assert_eq!(
+        //     document.fields.id.encode(),
+        //     "did:btc1:k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp"
+        // );
     }
 }

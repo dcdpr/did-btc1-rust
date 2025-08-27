@@ -1,5 +1,5 @@
 use crate::identifier::Network;
-use bitcoin::address::Address;
+use esploda::bitcoin::address::Address;
 use onlyerror::Error;
 use serde_json::{Value, json};
 use std::{fmt, str::FromStr};
@@ -13,7 +13,7 @@ pub enum Error {
     InvalidBip21,
 
     /// Bitcoin Address Parse error
-    AddressParse(#[from] bitcoin::address::ParseError),
+    AddressParse(#[from] esploda::bitcoin::address::Error),
 
     /// Identifier Parse Error
     IdentifierParse(#[from] crate::identifier::Error),

@@ -27,7 +27,6 @@ sha2 = "0.10"
 
 # Bitcoin
 bech32-rust = { path = "../bech32-rust" }
-bitcoin = { version = "0.32", default-features = false, features = ["std"] }
 esploda = "0.2"
 
 [dev-dependencies]

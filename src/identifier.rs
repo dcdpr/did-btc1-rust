@@ -240,14 +240,13 @@ impl From<Network> for u8 {
     }
 }
 
-impl TryFrom<Network> for bitcoin::Network {
+impl TryFrom<Network> for esploda::bitcoin::Network {
     type Error = Error;
 
     fn try_from(value: Network) -> Result<Self, Error> {
         match value {
             Network::Mainnet => Ok(Self::Bitcoin),
             Network::TestnetV3 => Ok(Self::Testnet),
-            Network::TestnetV4 => Ok(Self::Testnet4),
             Network::Regtest => Ok(Self::Regtest),
             Network::Signet | Network::Mutinynet => Ok(Self::Signet),
             _ => Err(Error::InvalidNetwork(u8::from(value))),

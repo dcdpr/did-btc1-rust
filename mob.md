@@ -137,3 +137,29 @@ for next time:
 for next time:
 
 - Continue with blockchain Traversal. Section 4.2.2.1, Step 4/5.
+
+2025-08-25 (part 3)
+
+Jay worked a bit on his own and accomplished the following:
+
+- Remove unused dependencies.
+- Remove the unused workspace.
+- Group dependencies and sort by name.
+- Remove the unwraps in our example with anyhow.
+- Split blockchain traversal FSM into public TraversalState and private TraversalFsm.
+- Remove the Did argument from Document constructors.
+- Replace the macro for DocumentFields with a single From impl that uses an extension trait for Did/String.
+- Add Blockchain RPC host to ResolutionOptions::sidecar_data.
+- Remove ContemporaryDocument. It's identical to InitialDocument, but it was causing some friction to use.
+- Remove more unneeded Did method arguments where the DID is available on self.
+- Pull all parsed document fields into InitialDocument.
+- Move the FSM in and out of the traversal API using type-state. Resolves API misuse before it can ever happen.
+
+
+2025-08-26
+
+We started mobbing today, but hit some confusing blockchain traveral
+algorithm steps due to a huge Beacons chapter refactoring that got
+merged into the spec. We asked for clarification over signal and will
+continue tomorrow.
+

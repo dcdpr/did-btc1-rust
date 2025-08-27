@@ -4,8 +4,8 @@ use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, Sha256H
 use crate::key::{PublicKey, PublicKeyExt as _};
 use crate::verification::{VerificationMethod, VerificationMethodId};
 use crate::{blockchain::Traversal, identifier::TryNetworkExt, proof::Proof};
-use bitcoin::Address;
 use chrono::{DateTime, Utc};
+use esploda::bitcoin::{Address, Txid};
 use onlyerror::Error;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -80,7 +80,7 @@ pub enum Error {
     Infallible(#[from] std::convert::Infallible),
 
     /// Bitcoin address parse error
-    AddressParse(#[from] bitcoin::address::ParseError),
+    AddressParse(#[from] esploda::bitcoin::address::Error),
 
     /// Unexpected DID
     #[error("Expected `{0}` but found `{1}`")]
@@ -103,7 +103,7 @@ impl ProblemDetails for Error {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DocumentFields<T> {
     /// DID identifier
-    id: T,
+    pub(crate) id: T,
 
     /// Document context
     context: Vec<String>,
@@ -201,8 +201,7 @@ pub struct ResolutionOptions {
 pub struct SidecarData {
     pub initial_document: Option<InitialDocument>,
 
-    // TODO: Use Txid instead of String
-    pub signals_metadata: HashMap<String, SignalsMetadata>,
+    pub signals_metadata: HashMap<Txid, SignalsMetadata>,
 
     // TODO: Using the `url` crate is probably better.
     /// Blockchain RPC URI.
@@ -232,7 +231,7 @@ pub struct SmtProofs;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Document {
     /// All structural Document fields
-    fields: DocumentFields<Did>,
+    pub(crate) fields: DocumentFields<Did>,
     /// The document data as a JSON Value
     data: Map<String, Value>,
 }
