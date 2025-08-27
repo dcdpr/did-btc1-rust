@@ -657,20 +657,14 @@ fn generate_beacons(
 ) -> Result<Vec<Beacon>, Error> {
     use crate::beacon::Type;
 
+    let secp = secp256k1::Secp256k1::verification_only();
     let network = did.components().network().try_into()?;
+    // TODO: After the `bitcoin` crate is updated, we can remove this extra public key constructor.
+    let public_key = esploda::bitcoin::PublicKey::new(did.public_key_unchecked());
 
-    // TODO: Fix address generation
-    // We need some kind of `Wallet` trait that can generate addresses
-    // passed in through `ResolutionOptions`
-    let p2pkh_beacon = "TODO: Create P2PKH address from wallet"
-        .parse::<Address<_>>()?
-        .require_network(network)?;
-    let p2wpkh_beacon = "TODO: Create P2WPKH address from wallet"
-        .parse::<Address<_>>()?
-        .require_network(network)?;
-    let p2tr_beacon = "TODO: Create P2TR address from wallet"
-        .parse::<Address<_>>()?
-        .require_network(network)?;
+    let p2pkh_beacon = Address::p2pkh(&public_key, network);
+    let p2wpkh_beacon = Address::p2wpkh(&public_key, network)?;
+    let p2tr_beacon = Address::p2tr(&secp, public_key.inner.into(), None, network);
 
     // TODO: Allow overriding the default minimum confirmations required in `ResolutionOptions`?
     Ok(vec![
@@ -683,6 +677,8 @@ fn generate_beacons(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blockchain::TraversalState;
+    use esploda::esplora::Transaction;
     use std::path::PathBuf;
 
     #[test]
@@ -731,12 +727,35 @@ mod tests {
             )
             .unwrap(),
         );
-        let did_components =
-            DidComponents::new(DidVersion::One, Network::Regtest, id_type).unwrap();
+        let did_components = DidComponents::new(DidVersion::One, Network::Signet, id_type).unwrap();
 
-        let (did, document) = Document::from_did_components(did_components).unwrap();
-        // todo: need to traverse
-        //assert!(document.fields.controller.contains(&did));
+        let (did, fsm) = Document::from_did_components(did_components).unwrap();
+        let TraversalState::Requests(next_state, requests) = fsm.traverse().unwrap() else {
+            unreachable!()
+        };
+
+        let request_urls = requests
+            .into_iter()
+            .map(|req| req.uri().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            request_urls,
+            [
+                "https://blockstream.info/testnet/api/address/mtA1SshFsJtD2Di1KBSTmyuD23eBqUekQ3/txs",
+                "https://blockstream.info/testnet/api/address/tb1q323c0l0fapjeg4ux9ayumnpqh8xzqgk3wg82dy/txs",
+                "https://blockstream.info/testnet/api/address/tb1pecc8w64wdvn6x2np8yr8qvsz2pclydkd9t5jde2gf0hy0musfxxsn23q20/txs",
+            ],
+        );
+
+        // This JSON file has more transactions than we need, but that's ok for testing.
+        let json = include_str!("../fixtures/exampleTargetDocument-transactions.json");
+        let transactions: Vec<Transaction> = serde_json::from_str(json).unwrap();
+        let fsm = next_state.process_responses(transactions);
+
+        let TraversalState::Resolved(document) = fsm.traverse().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(document.fields.id.encode(), did.encode());
     }
 
     #[test]

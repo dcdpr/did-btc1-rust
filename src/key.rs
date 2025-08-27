@@ -1,7 +1,18 @@
 use base58::ToBase58;
 use onlyerror::Error;
-use secp256k1::Secp256k1;
 pub use secp256k1::{PublicKey, SecretKey};
+use secp256k1::{Secp256k1, constants::PUBLIC_KEY_SIZE};
+
+/// Multikey prefix specified by [Data Integrity BIP340 Cryptosuites]
+///
+/// [Data Integrity BIP340 Cryptosuites]: https://dcdpr.github.io/data-integrity-schnorr-secp256k1/#multikey
+const MULTIKEY_PREFIX: [u8; 2] = [0xe7, 0x01];
+
+// TODO: This a prefix from an old version of the specification changed in [#14].
+// `./fixtures/exampleTargetDocument.json` uses this for its "publicKeyMultibase".
+//
+// [#14]: https://github.com/dcdpr/data-integrity-schnorr-secp256k1/pull/14
+const OLD_MULTIKEY_PREFIX: [u8; 2] = [0xe1, 0x4a];
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -48,7 +59,8 @@ impl PublicKeyExt for PublicKey {
             base58::FromBase58::from_base58(&multikey[1..]).map_err(|_| Error::MultikeyBase58)?;
 
         // Check prefix
-        if data.len() < 2 || data[0] != 0xe7 || data[1] != 0x01 {
+        // TODO: Remove `OLD_MULTIKEY_PREFIX` when the test vectors are fixed.
+        if data.len() < 2 || (data[0..2] != MULTIKEY_PREFIX && data[0..2] != OLD_MULTIKEY_PREFIX) {
             return Err(Error::MultikeyPrefix);
         }
 
@@ -57,14 +69,16 @@ impl PublicKeyExt for PublicKey {
     }
 
     fn to_multikey(&self) -> String {
+        const PREFIX_LEN: usize = MULTIKEY_PREFIX.len();
+
         // Serialize to bytes
         let key_bytes = self.serialize();
 
-        // Prepend Multikey prefix for secp256k1 x-only (0xe14a)
-        let mut data = Vec::with_capacity(2 + key_bytes.len());
-        data.push(0xe1);
-        data.push(0x4a);
-        data.extend_from_slice(&key_bytes);
+        // Prepend Multikey prefix for secp256k1 compressed public key
+        let mut data = [0; PREFIX_LEN + PUBLIC_KEY_SIZE];
+
+        data[..PREFIX_LEN].copy_from_slice(&MULTIKEY_PREFIX);
+        data[PREFIX_LEN..].copy_from_slice(&key_bytes);
 
         // Encode with base58-btc
         let encoded = data.to_base58();

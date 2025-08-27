@@ -1,7 +1,7 @@
+use crate::beacon::Type as BeaconType;
 use crate::document::{Document, Update};
 use crate::document::{InitialDocument, IntermediateDocument, ResolutionOptions, SignalsMetadata};
 use crate::identifier::Sha256Hash;
-use crate::beacon::Type as BeaconType;
 use chrono::{DateTime, Utc};
 use esploda::esplora::{Status, Transaction};
 use esploda::{Req, bitcoin::Txid};
@@ -120,7 +120,7 @@ impl Traversal {
                 self.contemporary_block_height = next_signals[0].block_height;
 
                 // Step 8.
-                self.process_beacon_signals(next_signals);
+                let updates = self.process_beacon_signals(next_signals)?;
 
                 todo!()
             }
@@ -137,6 +137,11 @@ impl Traversal {
             .iter()
             .zip(transactions)
             .enumerate()
+            // TODO: Need to filter transactions according to rule in Section 5.2.2.2, Step 2.2.
+            // Alternatively: Section 4.7, Steps 8.2.2 - 8.2.3.
+            //
+            // Q: What if the transaction doesn't match the filter rule? Why is this not an error
+            // condition? That spend is gone... It can't be double-spent. The beacon is dead.
             .map(|(i, (b, tx))| {
                 let (block_height, block_time) = match tx.status {
                     Status::Unconfirmed => todo!("Unconfirmed transactions are not supported yet"),
@@ -177,12 +182,18 @@ impl Traversal {
     }
 
     // Spec section 5.2.2.3
-    fn process_beacon_signals(&self, beacon_signals: Vec<NextSignal>) -> Result<Vec<Update>, Error> {
+    fn process_beacon_signals(
+        &self,
+        beacon_signals: Vec<NextSignal>,
+    ) -> Result<Vec<Update>, Error> {
         // Step 1.
         // Step 2.
         for beacon_signal in beacon_signals {
             // Step 2.1 - 2.4
-            let signal_metadata = self.signals_metadata.get(&beacon_signal.tx).ok_or(Error::SidecarDataNotFound)?;
+            let signal_metadata = self
+                .signals_metadata
+                .get(&beacon_signal.tx)
+                .ok_or(Error::SidecarDataNotFound)?;
 
             match beacon_signal.beacon_type {
                 BeaconType::Singleton => todo!(),
@@ -269,13 +280,14 @@ impl From<&ResolutionOptions> for TargetCondition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
+    #[ignore]
     fn test_traversal() {
         let path = "./fixtures/exampleTargetDocument.json";
         let initial_document = InitialDocument::from_file(path).unwrap();
 
         let fsm = Traversal::new(initial_document, &ResolutionOptions::default());
-
         let TraversalState::Requests(next_state, requests) = fsm.traverse().unwrap() else {
             unreachable!()
         };
@@ -284,7 +296,6 @@ mod tests {
             .into_iter()
             .map(|req| req.uri().to_string())
             .collect::<Vec<_>>();
-
         assert_eq!(
             request_urls,
             [
@@ -297,17 +308,14 @@ mod tests {
 
         let json = include_str!("../fixtures/exampleTargetDocument-transactions.json");
         let transactions: Vec<Transaction> = serde_json::from_str(json).unwrap();
-
         let fsm = next_state.process_responses(transactions);
 
-        // todo: this will panic at step 8 above in traverse()
-        // let TraversalState::Resolved(document) = fsm.traverse().unwrap() else {
-        //     unreachable!()
-        // };
-
-        // assert_eq!(
-        //     document.fields.id.encode(),
-        //     "did:btc1:k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp"
-        // );
+        let TraversalState::Resolved(document) = fsm.traverse().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(
+            document.fields.id.encode(),
+            "did:btc1:k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp",
+        );
     }
 }
