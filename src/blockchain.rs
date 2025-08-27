@@ -142,6 +142,9 @@ impl Traversal {
             //
             // Q: What if the transaction doesn't match the filter rule? Why is this not an error
             // condition? That spend is gone... It can't be double-spent. The beacon is dead.
+            //
+            // possible A: perhaps not. the address may be able to spend some BTC not related to
+            // the beacon signalling? Need to ask.
             .map(|(i, (b, tx))| {
                 let (block_height, block_time) = match tx.status {
                     Status::Unconfirmed => todo!("Unconfirmed transactions are not supported yet"),

@@ -1,0 +1,3 @@
+[net]
+# See: https://doc.rust-lang.org/cargo/reference/config.html#netgit-fetch-with-cli
+git-fetch-with-cli = true

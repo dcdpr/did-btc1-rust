@@ -163,3 +163,18 @@ algorithm steps due to a huge Beacons chapter refactoring that got
 merged into the spec. We asked for clarification over signal and will
 continue tomorrow.
 
+
+2025-08-27
+
+- Fixed the CI build (we think so)
+
+for next time:
+
+- More blockchain traversal... currently blocked on: https://github.com/dcdpr/did-btc1/issues/186
+- We can also experiment with SMT stuff. Here are some crates that we evaluated:
+  - https://crates.io/crates/monotree
+    - Might need a patch to make the hashers optional
+  - https://crates.io/crates/sparse-merkle-tree
+  - https://crates.io/crates/fuel-merkle
+    - Architecture docs: https://github.com/FuelLabs/fuel-specs/blob/master/src/protocol/cryptographic-primitives.md#sparse-merkle-tree
+

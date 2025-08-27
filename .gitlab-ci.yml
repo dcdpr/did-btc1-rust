@@ -1,3 +1,13 @@
+.git-access:
+  before_script:
+    - git config --global credential.helper store
+    - echo "https://gitlab-ci-token:${CI_JOB_TOKEN}@gl1.dcdpr.com" > ~/.git-credentials
+    - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gl1.dcdpr.com".insteadOf ssh://git@gl1.dcdpr.com
+    - git config --list
+  after_script:
+    - git config --global --unset url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gl1.dcdpr.com".insteadOf
+    - git config --list
+
 rustup-update:
   stage: .pre
   needs: []
@@ -9,6 +19,7 @@ rustup-update:
     - rustc --version
 
 cargo-check:
+  extends: .git-access
   stage: build
   needs: []
   tags:
@@ -17,6 +28,7 @@ cargo-check:
     - cargo check --workspace --benches --examples --tests --all-features
 
 cargo-check:release:
+  extends: .git-access
   stage: build
   needs: []
   tags:
@@ -25,6 +37,7 @@ cargo-check:release:
     - cargo check --workspace --benches --examples --tests --all-features --release
 
 cargo-deny:
+  extends: .git-access
   stage: build
   needs: []
   tags:
@@ -34,6 +47,7 @@ cargo-deny:
     - cargo deny --locked --workspace check all
 
 cargo-fmt:
+  extends: .git-access
   stage: build
   needs: ["cargo-check", "cargo-check:release", "cargo-deny"]
   tags:
@@ -42,6 +56,7 @@ cargo-fmt:
     - cargo fmt --all -- --check
 
 cargo-doc:
+  extends: .git-access
   stage: build
   needs: ["cargo-check", "cargo-check:release", "cargo-deny"]
   tags:
@@ -52,6 +67,7 @@ cargo-doc:
     - cargo doc --workspace --no-deps
 
 cargo-clippy:
+  extends: .git-access
   stage: build
   needs: ["cargo-check", "cargo-check:release", "cargo-deny"]
   tags:
@@ -60,6 +76,7 @@ cargo-clippy:
     - cargo clippy --all --tests -- -D warnings
 
 cargo-test:
+  extends: .git-access
   stage: test
   tags:
     - shell-executor
@@ -67,6 +84,7 @@ cargo-test:
     - cargo test --workspace
 
 cargo-test:release:
+  extends: .git-access
   stage: test
   tags:
     - shell-executor
