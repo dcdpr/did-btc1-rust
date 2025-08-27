@@ -74,7 +74,7 @@ impl PublicKeyExt for PublicKey {
         // Serialize to bytes
         let key_bytes = self.serialize();
 
-        // Prepend Multikey prefix for secp256k1 x-only (0xe14a)
+        // Prepend Multikey prefix for secp256k1 compressed public key
         let mut data = [0; PREFIX_LEN + PUBLIC_KEY_SIZE];
 
         data[..PREFIX_LEN].copy_from_slice(&MULTIKEY_PREFIX);
