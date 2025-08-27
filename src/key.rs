@@ -1,7 +1,7 @@
 use base58::ToBase58;
 use onlyerror::Error;
-use secp256k1::Secp256k1;
 pub use secp256k1::{PublicKey, SecretKey};
+use secp256k1::{Secp256k1, constants::PUBLIC_KEY_SIZE};
 
 /// Multikey prefix specified by [Data Integrity BIP340 Cryptosuites]
 ///
@@ -69,14 +69,16 @@ impl PublicKeyExt for PublicKey {
     }
 
     fn to_multikey(&self) -> String {
+        const PREFIX_LEN: usize = MULTIKEY_PREFIX.len();
+
         // Serialize to bytes
         let key_bytes = self.serialize();
 
         // Prepend Multikey prefix for secp256k1 x-only (0xe14a)
-        let mut data = Vec::with_capacity(2 + key_bytes.len());
-        data.push(0xe1);
-        data.push(0x4a);
-        data.extend_from_slice(&key_bytes);
+        let mut data = [0; PREFIX_LEN + PUBLIC_KEY_SIZE];
+
+        data[..PREFIX_LEN].copy_from_slice(&MULTIKEY_PREFIX);
+        data[PREFIX_LEN..].copy_from_slice(&key_bytes);
 
         // Encode with base58-btc
         let encoded = data.to_base58();

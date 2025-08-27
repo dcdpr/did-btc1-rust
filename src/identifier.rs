@@ -38,7 +38,7 @@
 
 use bech32_rust::{Bech32Error, DecodedResult, decode, encode};
 use onlyerror::Error;
-use secp256k1::PublicKey;
+use secp256k1::{PublicKey, constants::PUBLIC_KEY_SIZE};
 use std::str::FromStr;
 
 /// The DID method prefix for BTC1 identifiers
@@ -49,9 +49,6 @@ pub const HRP_KEY: &str = "k";
 
 /// Human-readable part for external document-based DID identifiers
 pub const HRP_EXTERNAL: &str = "x";
-
-/// Expected length of a compressed secp256k1 public key
-pub const SECP256K1_COMPRESSED_KEY_LEN: usize = 33;
 
 /// Expected length of a SHA-256 hash
 pub const SHA256_HASH_LEN: usize = 32;
@@ -258,7 +255,7 @@ impl TryFrom<Network> for esploda::bitcoin::Network {
 pub enum IdType {
     // TODO: Replace array with `PublicKey`
     /// Key-based identifier (secp256k1 public key)
-    Key([u8; SECP256K1_COMPRESSED_KEY_LEN]),
+    Key([u8; PUBLIC_KEY_SIZE]),
 
     /// External document-based identifier (hash of external document)
     External(Sha256Hash),
@@ -280,7 +277,7 @@ impl TryFrom<&DecodedResult> for IdType {
 
         // Validate bytes length
         let expected_len = match decoded.hrp.as_str() {
-            HRP_KEY => SECP256K1_COMPRESSED_KEY_LEN,
+            HRP_KEY => PUBLIC_KEY_SIZE,
             HRP_EXTERNAL => SHA256_HASH_LEN,
             _ => return Err(Error::InvalidHrp(decoded.hrp.clone())),
         };
@@ -463,7 +460,7 @@ mod tests {
     impl From<&[u8]> for IdType {
         fn from(bytes: &[u8]) -> Self {
             match bytes.len() {
-                SECP256K1_COMPRESSED_KEY_LEN => IdType::Key(bytes.try_into().unwrap()),
+                PUBLIC_KEY_SIZE => IdType::Key(bytes.try_into().unwrap()),
                 SHA256_HASH_LEN => IdType::External(Sha256Hash(bytes.try_into().unwrap())),
                 _ => unreachable!(),
             }
@@ -485,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_id_type_hrps() {
-        let key = IdType::from(&[0_u8; SECP256K1_COMPRESSED_KEY_LEN][..]);
+        let key = IdType::from(&[0_u8; PUBLIC_KEY_SIZE][..]);
         assert_eq!(key.hrp(), "k");
 
         let hash = IdType::from(&[0_u8; SHA256_HASH_LEN][..]);
@@ -494,7 +491,7 @@ mod tests {
 
     #[test]
     fn test_encode_decode_key_based() {
-        let key = IdType::from(&[0_u8; SECP256K1_COMPRESSED_KEY_LEN][..]);
+        let key = IdType::from(&[0_u8; PUBLIC_KEY_SIZE][..]);
 
         let did_str = encode_did_identifier(DidVersion::One, Network::Mainnet, key).unwrap();
 
@@ -539,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_custom_network() {
-        let key = IdType::from(&[0_u8; SECP256K1_COMPRESSED_KEY_LEN][..]);
+        let key = IdType::from(&[0_u8; PUBLIC_KEY_SIZE][..]);
         let did = encode_did_identifier(DidVersion::One, Network::Custom(15), key).unwrap();
 
         let components = parse_did_identifier(&did).unwrap();
