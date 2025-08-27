@@ -659,6 +659,7 @@ fn generate_beacons(
 
     let secp = secp256k1::Secp256k1::verification_only();
     let network = did.components().network().try_into()?;
+    // TODO: After the `bitcoin` crate is updated, we can remove this extra public key constructor.
     let public_key = esploda::bitcoin::PublicKey::new(did.public_key_unchecked());
 
     let p2pkh_beacon = Address::p2pkh(&public_key, network);
