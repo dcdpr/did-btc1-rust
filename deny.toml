@@ -1,0 +1,29 @@
+# Documentation for this configuration: https://embarkstudios.github.io/cargo-deny/checks/cfg.html
+
+[advisories]
+version = 2
+ignore = []
+
+[licenses]
+version = 2
+# https://spdx.org/licenses/
+allow = [
+    "Apache-2.0", "BSD-3-Clause", "CC0-1.0", "ISC", "MIT", "MPL-2.0",
+    # https://spdx.org/licenses/MITNFA.html
+    # https://spdx.org/licenses/Unicode-3.0.html
+    # https://spdx.org/licenses/Unicode-DFS-2016.html
+    "MITNFA", "Unicode-3.0", "Unicode-DFS-2016",
+]
+confidence-threshold = 0.93
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = [
+    "ssh://git@gl1.dcdpr.com/dcd/bech32-rust.git",
+]
