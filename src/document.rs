@@ -496,7 +496,7 @@ impl InitialDocument {
     pub fn from_did(did: &Did, resolution_options: &ResolutionOptions) -> Result<Self, Error> {
         match did.components().id_type() {
             IdType::Key(_) => Self::deterministically_generate(did, resolution_options),
-            IdType::External(_) => Self::resolve_external(did, resolution_options),
+            IdType::External(hash) => Self::resolve_external(hash, resolution_options),
         }
     }
 
@@ -527,7 +527,10 @@ impl InitialDocument {
     }
 
     // Spec section 4.2.1.2
-    fn resolve_external(did: &Did, resolution_options: &ResolutionOptions) -> Result<Self, Error> {
+    fn resolve_external(
+        hash: Sha256Hash,
+        resolution_options: &ResolutionOptions,
+    ) -> Result<Self, Error> {
         // Step 1
         let initial_document = resolution_options
             .sidecar_data
@@ -535,7 +538,7 @@ impl InitialDocument {
             .and_then(|data| {
                 data.initial_document
                     .as_ref()
-                    .map(|doc| doc.sidecar_initial_validation(did))
+                    .map(|doc| doc.sidecar_initial_validation(hash))
             })
             .unwrap_or_else(|| todo!("Sans I/O CAS retrieval"))?;
 
@@ -547,25 +550,20 @@ impl InitialDocument {
     }
 
     // Spec section 4.2.1.2.1
-    fn sidecar_initial_validation(&self, did: &Did) -> Result<Self, Error> {
+    fn sidecar_initial_validation(&self, hash: Sha256Hash) -> Result<Self, Error> {
         let intermediate_doc = IntermediateDocument::from_initial(self);
 
         // Canonicalize the JSON doc to get a hash
         // todo: need to use RDFC canonicalization instead
-
         let hash_bytes = intermediate_doc.hash();
 
-        let IdType::External(hash) = did.components().id_type() else {
-            unreachable!(); // todo: parse don't validate
-        };
-
-        if hash != hash_bytes {
-            return Err(Btc1Error::InvalidDid(
+        if hash_bytes != hash {
+            Err(Btc1Error::InvalidDid(
                 "TODO: description for sidecar_initial_validation() hash mismatch".to_string(),
-            ))?;
+            ))?
+        } else {
+            Ok(self.clone())
         }
-
-        Ok(self.clone())
     }
 }
 
@@ -680,6 +678,15 @@ mod tests {
     use esploda::esplora::Transaction;
     use std::path::PathBuf;
 
+    impl Did {
+        fn hash_unchecked(&self) -> Sha256Hash {
+            match self.components().id_type() {
+                IdType::Key(_) => unreachable!(), // todo: parse don't validate
+                IdType::External(hash) => hash,
+            }
+        }
+    }
+
     #[test]
     fn test_document_parse() {
         let path = PathBuf::from("./fixtures/exampleTargetDocument.json");
@@ -700,10 +707,11 @@ mod tests {
             ..Default::default()
         };
 
-        let did = "did:btc1:x1qgestr7xmvjpddg0s56ncpsrt8dct8gnrm5kchhxw3meutpu2cwcxegf65v"
+        let did: Did = "did:btc1:x1qgestr7xmvjpddg0s56ncpsrt8dct8gnrm5kchhxw3meutpu2cwcxegf65v"
             .parse()
             .unwrap();
-        let initial_doc = InitialDocument::resolve_external(&did, &resolution_options).unwrap();
+        let hash = did.hash_unchecked();
+        let initial_doc = InitialDocument::resolve_external(hash, &resolution_options).unwrap();
         assert_eq!(initial_doc.fields.id, did);
     }
 
