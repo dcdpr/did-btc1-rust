@@ -1,12 +1,11 @@
+# TODO: This updates global state (shared by all CI jobs) and doesn't do synchronization or proper cleanup
 .git-access:
   before_script:
     - git config --global credential.helper store
-    - echo "https://gitlab-ci-token:${CI_JOB_TOKEN}@gl1.dcdpr.com" > ~/.git-credentials
+    - echo "https://gitlab-ci-token:${CI_JOB_TOKEN}@gl1.dcdpr.com" >> ~/.git-credentials
     - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gl1.dcdpr.com".insteadOf ssh://git@gl1.dcdpr.com
-    - git config --list
   after_script:
     - git config --global --unset url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gl1.dcdpr.com".insteadOf
-    - git config --list
 
 rustup-update:
   stage: .pre
