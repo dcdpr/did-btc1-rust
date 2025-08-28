@@ -178,3 +178,18 @@ for next time:
   - https://crates.io/crates/fuel-merkle
     - Architecture docs: https://github.com/FuelLabs/fuel-specs/blob/master/src/protocol/cryptographic-primitives.md#sparse-merkle-tree
 
+
+2025-08-28
+
+- Added `test-suite` git submodule
+- Made a little progress on the blockchain traversal, by interpreting the changing process beacons
+  spec chapters.
+- Correctly filtering the last transaction vout by `OP_RETURN, OP_PUSHBYTES_32` to get the expected
+  hash.
+- Updated the sidecar thing to map updates hashes (BTC1 Update Announcements) to updates/patches.
+- Made CanonicalHash trait to centralize the JCS canonicalization and hash code to one place.
+
+for next time:
+
+- Figure out what to do with singleton updates in process_beacon_signals()
+- This includes Data Integrity proofs, ZCAP-LD, all that stuff

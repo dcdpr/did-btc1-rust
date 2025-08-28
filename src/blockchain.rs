@@ -1,10 +1,11 @@
 use crate::beacon::Type as BeaconType;
-use crate::document::{Document, Update};
+use crate::canonical_hash::CanonicalHash as _;
 use crate::document::{InitialDocument, IntermediateDocument, ResolutionOptions, SignalsMetadata};
 use crate::identifier::Sha256Hash;
+use crate::{document::Document, update::Update};
 use chrono::{DateTime, Utc};
+use esploda::bitcoin::{opcodes::all::OP_RETURN, script::Instruction};
 use esploda::esplora::{Status, Transaction};
-use esploda::{Req, bitcoin::Txid};
 use onlyerror::Error;
 use std::collections::HashMap;
 
@@ -22,6 +23,9 @@ pub enum Error {
 
     /// Sidecar data not found
     SidecarDataNotFound,
+
+    /// Update hash does not match
+    UpdateHashMismatch,
 }
 
 /// State machine for Bitcoin blockchain traversal.
@@ -32,7 +36,7 @@ pub struct Traversal<T = ()> {
     current_version_id: u64,
     target_condition: TargetCondition,
     update_hash_history: Vec<Sha256Hash>,
-    signals_metadata: HashMap<Txid, SignalsMetadata>,
+    signals_metadata: HashMap<Sha256Hash, SignalsMetadata>,
     rpc_host: String,
 
     // Finite State Machine
@@ -90,7 +94,7 @@ impl Traversal {
             TraversalFsm::Init => {
                 // Step 1.
                 let contemporary_hash =
-                    IntermediateDocument::from_initial(&self.contemporary_doc).compute_hash();
+                    IntermediateDocument::from_initial(&self.contemporary_doc).hash();
 
                 // Step 2, 3: unnecessary
 
@@ -137,15 +141,30 @@ impl Traversal {
             .iter()
             .zip(transactions)
             .enumerate()
-            // TODO: Need to filter transactions according to rule in Section 5.2.2.2, Step 2.2.
-            // Alternatively: Section 4.7, Steps 8.2.2 - 8.2.3.
-            //
-            // Q: What if the transaction doesn't match the filter rule? Why is this not an error
-            // condition? That spend is gone... It can't be double-spent. The beacon is dead.
-            //
-            // possible A: perhaps not. the address may be able to spend some BTC not related to
-            // the beacon signalling? Need to ask.
-            .map(|(i, (b, tx))| {
+            .filter_map(|(i, (b, tx))| {
+                let txout = tx.outputs.last().unwrap();
+                let mut ops = txout.script_pubkey.instructions();
+
+                // First instruction must be `OP_RETURN`
+                match ops.next() {
+                    Some(Ok(Instruction::Op(OP_RETURN))) => (),
+                    _ => return None,
+                }
+
+                // Second instruction must be `OP_PUSHBYTES_32`
+                let hash = match ops.next() {
+                    Some(Ok(Instruction::PushBytes(bytes))) if bytes.len() == 32 => {
+                        Sha256Hash(bytes.as_bytes().try_into().unwrap())
+                    }
+                    _ => return None,
+                };
+
+                // Last iteration must be None
+                match ops.next() {
+                    None => (),
+                    _ => return None,
+                }
+
                 let (block_height, block_time) = match tx.status {
                     Status::Unconfirmed => todo!("Unconfirmed transactions are not supported yet"),
                     Status::Confirmed {
@@ -155,13 +174,13 @@ impl Traversal {
                     } => (block_height, block_time),
                 };
 
-                NextSignal {
+                Some(NextSignal {
                     beacon_id: i,
                     beacon_type: b.ty,
-                    tx: tx.txid,
+                    hash,
                     block_height,
                     block_time,
-                }
+                })
             })
             .collect()
     }
@@ -174,7 +193,7 @@ impl Traversal {
             .iter()
             .map(|b| {
                 // TODO: Move this to Esploda
-                Req::builder()
+                esploda::Req::builder()
                     .uri(format!("{}/address/{}/txs", self.rpc_host, b.descriptor))
                     .body(())
                     .unwrap()
@@ -184,28 +203,47 @@ impl Traversal {
         TraversalState::Requests(Traversal::from_init(self), requests)
     }
 
-    // Spec section 5.2.2.3
+    // Spec section 7.2.2.3
     fn process_beacon_signals(
         &self,
         beacon_signals: Vec<NextSignal>,
     ) -> Result<Vec<Update>, Error> {
-        // Step 1.
-        // Step 2.
         for beacon_signal in beacon_signals {
-            // Step 2.1 - 2.4
+            let expected_hash = beacon_signal.hash;
             let signal_metadata = self
                 .signals_metadata
-                .get(&beacon_signal.tx)
+                .get(&expected_hash)
                 .ok_or(Error::SidecarDataNotFound)?;
 
-            match beacon_signal.beacon_type {
-                BeaconType::Singleton => todo!(),
+            let update = match beacon_signal.beacon_type {
+                BeaconType::Singleton => {
+                    Self::process_singleton_beacon_signal(expected_hash, signal_metadata)?
+                }
                 BeaconType::Map => todo!(),
                 BeaconType::SparseMerkleTree => todo!(),
-            }
+            };
+
+            // YOU ARE HERE!
         }
 
         todo!()
+    }
+
+    fn process_singleton_beacon_signal(
+        expected_hash: Sha256Hash,
+        signal_metadata: &SignalsMetadata,
+    ) -> Result<&Update, Error> {
+        if let Some(update) = &signal_metadata.btc1_update {
+            let hash = update.hash();
+
+            if hash != expected_hash {
+                return Err(Error::UpdateHashMismatch);
+            }
+
+            Ok(update)
+        } else {
+            Err(Error::SidecarDataNotFound)
+        }
     }
 }
 
@@ -250,7 +288,7 @@ enum TraversalFsm {
 #[derive(Debug)]
 pub enum TraversalState {
     /// Requests need to be sent to the blockchain.
-    Requests(Traversal<WaitingForResponses>, Vec<Req>),
+    Requests(Traversal<WaitingForResponses>, Vec<esploda::Req>),
 
     /// Document is fully resolved.
     Resolved(Document),
@@ -259,7 +297,7 @@ pub enum TraversalState {
 struct NextSignal {
     beacon_id: usize,
     beacon_type: crate::beacon::Type,
-    tx: Txid,
+    hash: Sha256Hash,
     block_height: u32,
     block_time: DateTime<Utc>,
 }
@@ -283,6 +321,9 @@ impl From<&ResolutionOptions> for TargetCondition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::{SidecarData, SmtProofs};
+    use serde_json::Value;
+    use std::{fs, path::PathBuf};
 
     #[test]
     #[ignore]
@@ -290,7 +331,55 @@ mod tests {
         let path = "./fixtures/exampleTargetDocument.json";
         let initial_document = InitialDocument::from_file(path).unwrap();
 
-        let fsm = Traversal::new(initial_document, &ResolutionOptions::default());
+        let updates_file_path = PathBuf::from(
+            "./test-suite/mutinynet/k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp",
+        );
+
+        // TODO: Seriously, fix this horrible setup code. Make some nice test fixtures
+        let hash1 = include_str!(
+            "../test-suite/mutinynet/k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp/block2207945/update_hash_hex.txt"
+        );
+        let update1 = serde_json::from_str::<Value>(
+            &fs::read_to_string(updates_file_path.join("block2207945").join("updates.json"))
+                .unwrap(),
+        )
+        .unwrap()[0]
+            .clone();
+
+        let hash2 = include_str!(
+            "../test-suite/mutinynet/k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp/block2219084/update_hash_hex.txt"
+        );
+        let update2 = serde_json::from_str::<Value>(
+            &fs::read_to_string(updates_file_path.join("block2219084").join("updates.json"))
+                .unwrap(),
+        )
+        .unwrap()[0]
+            .clone();
+
+        let resolution_options = ResolutionOptions {
+            sidecar_data: Some(SidecarData {
+                signals_metadata: HashMap::from_iter([
+                    (
+                        Sha256Hash(hex::decode(hash1).unwrap().try_into().unwrap()),
+                        SignalsMetadata {
+                            btc1_update: Update::from_json_value(update1).ok(),
+                            proofs: SmtProofs,
+                        },
+                    ),
+                    (
+                        Sha256Hash(hex::decode(hash2).unwrap().try_into().unwrap()),
+                        SignalsMetadata {
+                            btc1_update: Update::from_json_value(update2).ok(),
+                            proofs: SmtProofs,
+                        },
+                    ),
+                ]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let fsm = Traversal::new(initial_document, &resolution_options);
         let TraversalState::Requests(next_state, requests) = fsm.traverse().unwrap() else {
             unreachable!()
         };

@@ -20,3 +20,5 @@ pub use proof::{Proof, ProofOptions, ProofPurpose, VerificationResult};
 pub use verification::VerificationMethod;
 
 //mod did;
+mod canonical_hash;
+mod update;

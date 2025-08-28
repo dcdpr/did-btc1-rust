@@ -1,14 +1,15 @@
 use crate::beacon::{AddressExt as _, Beacon};
+use crate::canonical_hash::CanonicalHash;
 use crate::error::{Btc1Error, ProblemDetails};
 use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, Sha256Hash};
 use crate::key::{PublicKey, PublicKeyExt as _};
+use crate::update::{DocumentPatch, Update};
 use crate::verification::{VerificationMethod, VerificationMethodId};
 use crate::{blockchain::Traversal, identifier::TryNetworkExt, proof::Proof};
 use chrono::{DateTime, Utc};
-use esploda::bitcoin::{Address, Txid};
+use esploda::bitcoin::Address;
 use onlyerror::Error;
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 use std::{collections::HashMap, fmt::Display, fs, path::Path, str::FromStr};
 
 const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
@@ -201,7 +202,7 @@ pub struct ResolutionOptions {
 pub struct SidecarData {
     pub initial_document: Option<InitialDocument>,
 
-    pub signals_metadata: HashMap<Txid, SignalsMetadata>,
+    pub signals_metadata: HashMap<Sha256Hash, SignalsMetadata>,
 
     // TODO: Using the `url` crate is probably better.
     /// Blockchain RPC URI.
@@ -221,9 +222,6 @@ pub struct SignalsMetadata {
 }
 
 // Placeholders
-pub struct DocumentPatch;
-#[derive(Clone, Debug)]
-pub struct Update;
 #[derive(Clone, Debug)]
 pub struct SmtProofs;
 
@@ -474,7 +472,7 @@ impl InitialDocument {
         version: Option<DidVersion>,
         network: Option<Network>,
     ) -> Result<(Did, Self), Error> {
-        let hash = doc.compute_hash();
+        let hash = doc.hash();
 
         let id_type = IdType::External(hash);
 
@@ -555,7 +553,7 @@ impl InitialDocument {
         // Canonicalize the JSON doc to get a hash
         // todo: need to use RDFC canonicalization instead
 
-        let hash_bytes = intermediate_doc.compute_hash();
+        let hash_bytes = intermediate_doc.hash();
 
         let IdType::External(hash) = did.components().id_type() else {
             unreachable!(); // todo: parse don't validate
@@ -578,6 +576,14 @@ pub struct IntermediateDocument {
     pub(crate) beacon: Vec<Beacon>,
     json_data: Value,
 }
+
+impl AsRef<Value> for IntermediateDocument {
+    fn as_ref(&self) -> &Value {
+        &self.json_data
+    }
+}
+
+impl CanonicalHash for IntermediateDocument {}
 
 impl IntermediateDocument {
     /// Load an intermediate document from a file
@@ -621,13 +627,6 @@ impl IntermediateDocument {
             beacon: initial_doc.fields.beacon.clone(),
             json_data,
         }
-    }
-
-    pub(crate) fn compute_hash(&self) -> Sha256Hash {
-        let jcs = serde_jcs::to_string(&self.json_data).expect("JSON is always valid JCS");
-        let hash_bytes = Sha256::digest(jcs.as_bytes());
-
-        Sha256Hash(hash_bytes[..].try_into().unwrap())
     }
 }
 

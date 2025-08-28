@@ -262,7 +262,7 @@ pub enum IdType {
 }
 
 /// Represents a SHA-256 hash.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Sha256Hash(pub [u8; SHA256_HASH_LEN]);
 
 impl TryFrom<&DecodedResult> for IdType {
