@@ -21,4 +21,5 @@ pub use verification::VerificationMethod;
 
 //mod did;
 mod canonical_hash;
+mod json_tools;
 mod update;

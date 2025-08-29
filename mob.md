@@ -193,3 +193,15 @@ for next time:
 
 - Figure out what to do with singleton updates in process_beacon_signals()
 - This includes Data Integrity proofs, ZCAP-LD, all that stuff
+
+
+2025-08-29
+
+- add json_tools.rs to pull out many of the json parsing functions common to many types
+- we can get updates for Singleton beacons
+- sorted them by target_version_id
+
+for next time:
+
+- more blockchain traversal steps
+

@@ -124,7 +124,10 @@ impl Traversal {
                 self.contemporary_block_height = next_signals[0].block_height;
 
                 // Step 8.
-                let updates = self.process_beacon_signals(next_signals)?;
+                let mut updates = self.process_beacon_signals(next_signals)?;
+
+                // Step 9.
+                updates.as_mut_slice().sort_unstable_by_key(|update| update.target_version_id);
 
                 todo!()
             }
@@ -177,7 +180,7 @@ impl Traversal {
                 Some(NextSignal {
                     beacon_id: i,
                     beacon_type: b.ty,
-                    hash,
+                    signal_bytes: hash,
                     block_height,
                     block_time,
                 })
@@ -208,8 +211,8 @@ impl Traversal {
         &self,
         beacon_signals: Vec<NextSignal>,
     ) -> Result<Vec<Update>, Error> {
-        for beacon_signal in beacon_signals {
-            let expected_hash = beacon_signal.hash;
+        beacon_signals.into_iter().map(|beacon_signal| {
+            let expected_hash = beacon_signal.signal_bytes;
             let signal_metadata = self
                 .signals_metadata
                 .get(&expected_hash)
@@ -223,24 +226,19 @@ impl Traversal {
                 BeaconType::SparseMerkleTree => todo!(),
             };
 
-            // YOU ARE HERE!
-        }
-
-        todo!()
+            Ok(update)
+        }).collect()
     }
 
     fn process_singleton_beacon_signal(
         expected_hash: Sha256Hash,
         signal_metadata: &SignalsMetadata,
-    ) -> Result<&Update, Error> {
+    ) -> Result<Update, Error> {
         if let Some(update) = &signal_metadata.btc1_update {
-            let hash = update.hash();
-
-            if hash != expected_hash {
+            if update.hash() != expected_hash {
                 return Err(Error::UpdateHashMismatch);
             }
-
-            Ok(update)
+            Ok(update.clone())
         } else {
             Err(Error::SidecarDataNotFound)
         }
@@ -297,7 +295,7 @@ pub enum TraversalState {
 struct NextSignal {
     beacon_id: usize,
     beacon_type: crate::beacon::Type,
-    hash: Sha256Hash,
+    signal_bytes: Sha256Hash,
     block_height: u32,
     block_time: DateTime<Utc>,
 }
@@ -326,7 +324,6 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     #[test]
-    #[ignore]
     fn test_traversal() {
         let path = "./fixtures/exampleTargetDocument.json";
         let initial_document = InitialDocument::from_file(path).unwrap();

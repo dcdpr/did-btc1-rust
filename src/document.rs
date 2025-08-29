@@ -1,16 +1,16 @@
 use crate::beacon::{AddressExt as _, Beacon};
-use crate::canonical_hash::CanonicalHash;
 use crate::error::{Btc1Error, ProblemDetails};
 use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, Sha256Hash};
 use crate::key::{PublicKey, PublicKeyExt as _};
 use crate::update::{DocumentPatch, Update};
 use crate::verification::{VerificationMethod, VerificationMethodId};
 use crate::{blockchain::Traversal, identifier::TryNetworkExt, proof::Proof};
+use crate::{canonical_hash::CanonicalHash, json_tools};
 use chrono::{DateTime, Utc};
 use esploda::bitcoin::Address;
 use onlyerror::Error;
 use serde_json::{Map, Value, json};
-use std::{collections::HashMap, fmt::Display, fs, path::Path, str::FromStr};
+use std::{collections::HashMap, fs, path::Path, str::FromStr};
 
 const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
 const DID_BTC1_CONTEXT: &str = "https://did-btc1/TBD/context";
@@ -20,27 +20,6 @@ const DID_PLACEHOLDER: &str =
 
 const MIN_CONFIRMATIONS_REQUIRED: u32 = 6;
 
-#[derive(Debug)]
-pub enum ExpectedType {
-    Number,
-    String,
-    Boolean,
-    Array,
-    Object,
-}
-
-impl Display for ExpectedType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ExpectedType::Number => write!(f, "Number"),
-            ExpectedType::String => write!(f, "String"),
-            ExpectedType::Boolean => write!(f, "Boolean"),
-            ExpectedType::Array => write!(f, "Array"),
-            ExpectedType::Object => write!(f, "Object"),
-        }
-    }
-}
-
 #[derive(Error, Debug)]
 pub enum Error {
     /// Error during document I/O operations
@@ -48,36 +27,18 @@ pub enum Error {
     DocumentIO(#[from] std::io::Error),
 
     /// Error parsing JSON document
-    #[error("JSON parse error")]
     JsonParse(#[from] serde_json::Error),
 
-    /// Error converting JSON Value to str
-    #[error("Object key `{0}` was expected to be type `{1}`")]
-    UnexpectedJsonType(String, ExpectedType),
-
-    /// Missing element
-    #[error("Element `{0}` does not exist")]
-    JsonMissingElement(String),
-
-    /// Expected a JSON string
-    ExpectedJsonStr,
-
-    /// Error with key operations
-    Key(#[from] crate::key::Error),
+    /// Error parsing JSON value
+    JsonValue(#[from] json_tools::Error),
 
     /// DID Encoding error
     DidEncoding(#[from] crate::identifier::Error),
 
-    /// Verification Error
-    Verification(#[from] crate::verification::Error),
-
-    /// Document beacon endpoints error
-    Beacon(#[from] crate::beacon::Error),
-
     /// DID:BTC1 error
     Btc1Error(#[from] Btc1Error),
 
-    /// This should not happen
+    /// This should not happen: Only needed to satisfy `String: FromStr` trait bound
     Infallible(#[from] std::convert::Infallible),
 
     /// Bitcoin address parse error
@@ -127,41 +88,50 @@ impl<T> TryFrom<(&Value, Option<Network>)> for DocumentFields<T>
 where
     T: FromStr + TryNetworkExt,
     VerificationMethodId: FromStr,
-    Error: From<<T as FromStr>::Err> + From<<VerificationMethodId as FromStr>::Err>,
+    Error: From<<T as FromStr>::Err>,
+    json_tools::Error: From<<T as FromStr>::Err> + From<<VerificationMethodId as FromStr>::Err>,
 {
     type Error = Error;
 
     fn try_from((value, network): (&Value, Option<Network>)) -> Result<Self, Self::Error> {
-        let id: T = string_from_object(value, "id")?.parse()?;
+        let id: T = json_tools::string_from_object(value, "id")?.parse()?;
         let network = id.try_network().or(network).unwrap();
 
         // TODO: Might want to abstract this null-check for required keys.
         if value["@context"].is_null() {
-            return Err(Error::JsonMissingElement("@context".into()));
+            return Err(json_tools::Error::JsonMissingElement("@context".into()))?;
         }
-        let context = vec_from_object(value, "@context", |id| {
-            string_from_value(id).map(ToString::to_string)
+        let context = json_tools::vec_from_object(value, "@context", |id| {
+            json_tools::string_from_value(id).map(ToString::to_string)
         })?;
 
-        // TODO: All of these are optional. Only `vec_from_value` has been fixed
-        let controller = vec_from_value(value, "controller")?;
-        let verification_method = vec_from_object(value, "verificationMethod", |method| {
-            Ok(VerificationMethod::new(
-                string_from_object(method, "id")?.parse()?,
-                string_from_object(method, "controller")?.parse()?,
-                PublicKey::from_multikey(string_from_object(method, "publicKeyMultibase")?)?,
-            ))
-        })?;
-        let authentication = vec_from_value(value, "authentication")?;
-        let assertion_method = vec_from_value(value, "assertionMethod")?;
-        let capability_invocation = vec_from_value(value, "capabilityInvocation")?;
-        let capability_delegation = vec_from_value(value, "capabilityDelegation")?;
-        let beacon = vec_from_object(value, "beacon", |beacon| {
+        // TODO: All of these are optional. Only `json_tools::vec_from_value` has been fixed
+        let controller = json_tools::vec_from_value(value, "controller")?;
+        let verification_method =
+            json_tools::vec_from_object(value, "verificationMethod", |method| {
+                Ok(VerificationMethod::new(
+                    json_tools::string_from_object(method, "id")?.parse()?,
+                    json_tools::string_from_object(method, "controller")?.parse()?,
+                    PublicKey::from_multikey(json_tools::string_from_object(
+                        method,
+                        "publicKeyMultibase",
+                    )?)?,
+                ))
+            })?;
+        let authentication = json_tools::vec_from_value(value, "authentication")?;
+        let assertion_method = json_tools::vec_from_value(value, "assertionMethod")?;
+        let capability_invocation = json_tools::vec_from_value(value, "capabilityInvocation")?;
+        let capability_delegation = json_tools::vec_from_value(value, "capabilityDelegation")?;
+        let beacon = json_tools::vec_from_object(value, "beacon", |beacon| {
             Ok(Beacon::new(
-                string_from_object(beacon, "type")?.parse()?,
-                Address::from_bip21(string_from_object(beacon, "descriptor")?, network)?,
+                json_tools::string_from_object(beacon, "type")?.parse()?,
+                Address::from_bip21(
+                    json_tools::string_from_object(beacon, "descriptor")?,
+                    network,
+                )?,
                 // TODO: Use TryInto instead of `as` ... Correctly handle non-u32 numbers.
-                int_from_object(beacon, "minimumConfirmationsRequired").map(|min| min as u32)?,
+                json_tools::int_from_object(beacon, "minimumConfirmationsRequired")
+                    .map(|min| min as u32)?,
             ))
         })?;
 
@@ -297,62 +267,6 @@ impl Document {
         // This will be resolved by identifying the expected default value for ResolutionOptions::version_id
         crate::blockchain::Traversal::new(initial_document, resolution_options)
     }
-}
-
-/// Returns value[key] as a str if it is a JSON string.
-fn string_from_object<'value>(value: &'value Value, key: &str) -> Result<&'value str, Error> {
-    let obj = &value[key];
-
-    if obj.is_null() {
-        Err(Error::JsonMissingElement(key.into()))
-    } else {
-        obj.as_str()
-            .ok_or_else(|| Error::UnexpectedJsonType(key.into(), ExpectedType::String))
-    }
-}
-
-/// Returns value[key] as an int if it is a JSON number.
-fn int_from_object(value: &Value, key: &str) -> Result<i64, Error> {
-    let obj = &value[key];
-
-    if obj.is_null() {
-        Err(Error::JsonMissingElement(key.into()))
-    } else {
-        obj.as_i64()
-            .ok_or_else(|| Error::UnexpectedJsonType(key.into(), ExpectedType::Number))
-    }
-}
-
-/// Create a vector of any type from `value[key]` using a map function.
-fn vec_from_object<T, F>(value: &Value, key: &str, map_fn: F) -> Result<Vec<T>, Error>
-where
-    F: Fn(&Value) -> Result<T, Error>,
-{
-    let obj = &value[key];
-
-    if obj.is_null() {
-        Ok(Vec::new())
-    } else {
-        obj.as_array()
-            .ok_or_else(|| Error::UnexpectedJsonType(key.into(), ExpectedType::Array))?
-            .iter()
-            .map(map_fn)
-            .collect::<Result<Vec<_>, Error>>()
-    }
-}
-
-/// Returns a string if the JSON value is a string type.
-fn string_from_value(value: &Value) -> Result<&str, Error> {
-    value.as_str().ok_or(Error::ExpectedJsonStr)
-}
-
-/// Create a vector of any type from `value[key]` if it can be parsed from a string.
-fn vec_from_value<T>(value: &Value, key: &str) -> Result<Vec<T>, Error>
-where
-    T: FromStr,
-    Error: From<<T as FromStr>::Err>,
-{
-    vec_from_object(value, key, |v| Ok(string_from_value(v)?.parse()?))
 }
 
 impl Document {
@@ -720,7 +634,7 @@ mod tests {
         let path = "./fixtures/initialDidDoc-missing-verificationMethod-id.json";
         assert!(matches!(
             InitialDocument::from_file(path),
-            Err(Error::JsonMissingElement(key)) if key == "id"
+            Err(Error::JsonValue(json_tools::Error::JsonMissingElement(key))) if key == "id"
         ));
     }
 
