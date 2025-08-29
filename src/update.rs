@@ -1,8 +1,7 @@
 use crate::{canonical_hash::CanonicalHash, json_tools};
 use onlyerror::Error;
 use serde_json::Value;
-use std::{fs, path::Path};
-use std::num::NonZeroU64;
+use std::{fs, num::NonZeroU64, path::Path};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -15,8 +14,8 @@ pub enum Error {
     /// JSON value parse error
     JsonValue(#[from] json_tools::Error),
 
-    /// Zero found where non-Zero is required
-    NonZero(#[from] std::num::TryFromIntError),
+    /// Invalid targetVersionId
+    InvalidTargetVersionId,
 }
 
 #[derive(Clone, Debug)]
@@ -42,9 +41,12 @@ impl Update {
     pub fn from_json_value(value: Value) -> Result<Self, Error> {
         let json = serde_json::from_value(value)?;
 
-        // TODO: Use TryInto instead of `as` ... Correctly handle non-u64 numbers.
         let target_version_id =
-            json_tools::int_from_object(&json, "targetVersionId").map(|id| id as u64)?.try_into()?;
+            u64::try_from(json_tools::int_from_object(&json, "targetVersionId")?)
+                .map_err(|_| Error::InvalidTargetVersionId)?
+                .try_into()
+                .map_err(|_| Error::InvalidTargetVersionId)?;
+
         Ok(Self {
             target_version_id,
             json,

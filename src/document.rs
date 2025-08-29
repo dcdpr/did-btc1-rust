@@ -23,7 +23,6 @@ const MIN_CONFIRMATIONS_REQUIRED: u32 = 6;
 #[derive(Error, Debug)]
 pub enum Error {
     /// Error during document I/O operations
-    #[error("Document I/O error")]
     DocumentIO(#[from] std::io::Error),
 
     /// Error parsing JSON document
@@ -94,45 +93,43 @@ where
     type Error = Error;
 
     fn try_from((value, network): (&Value, Option<Network>)) -> Result<Self, Self::Error> {
-        let id: T = json_tools::string_from_object(value, "id")?.parse()?;
+        use json_tools::*;
+
+        let id: T = string_from_object(value, "id")?.parse()?;
         let network = id.try_network().or(network).unwrap();
 
         // TODO: Might want to abstract this null-check for required keys.
         if value["@context"].is_null() {
-            return Err(json_tools::Error::JsonMissingElement("@context".into()))?;
+            return Err(Error::JsonMissingElement("@context".into()))?;
         }
-        let context = json_tools::vec_from_object(value, "@context", |id| {
-            json_tools::string_from_value(id).map(ToString::to_string)
+        let context = vec_from_object(value, "@context", |id| {
+            string_from_value(id).map(ToString::to_string)
         })?;
 
-        // TODO: All of these are optional. Only `json_tools::vec_from_value` has been fixed
-        let controller = json_tools::vec_from_value(value, "controller")?;
-        let verification_method =
-            json_tools::vec_from_object(value, "verificationMethod", |method| {
-                Ok(VerificationMethod::new(
-                    json_tools::string_from_object(method, "id")?.parse()?,
-                    json_tools::string_from_object(method, "controller")?.parse()?,
-                    PublicKey::from_multikey(json_tools::string_from_object(
-                        method,
-                        "publicKeyMultibase",
-                    )?)?,
-                ))
-            })?;
-        let authentication = json_tools::vec_from_value(value, "authentication")?;
-        let assertion_method = json_tools::vec_from_value(value, "assertionMethod")?;
-        let capability_invocation = json_tools::vec_from_value(value, "capabilityInvocation")?;
-        let capability_delegation = json_tools::vec_from_value(value, "capabilityDelegation")?;
-        let beacon = json_tools::vec_from_object(value, "beacon", |beacon| {
-            Ok(Beacon::new(
-                json_tools::string_from_object(beacon, "type")?.parse()?,
-                Address::from_bip21(
-                    json_tools::string_from_object(beacon, "descriptor")?,
-                    network,
-                )?,
-                // TODO: Use TryInto instead of `as` ... Correctly handle non-u32 numbers.
-                json_tools::int_from_object(beacon, "minimumConfirmationsRequired")
-                    .map(|min| min as u32)?,
+        // TODO: All of these are optional. Only `vec_from_value` has been fixed
+        let controller = vec_from_value(value, "controller")?;
+        let verification_method = vec_from_object(value, "verificationMethod", |method| {
+            Ok(VerificationMethod::new(
+                string_from_object(method, "id")?.parse()?,
+                string_from_object(method, "controller")?.parse()?,
+                PublicKey::from_multikey(string_from_object(method, "publicKeyMultibase")?)?,
             ))
+        })?;
+        let authentication = vec_from_value(value, "authentication")?;
+        let assertion_method = vec_from_value(value, "assertionMethod")?;
+        let capability_invocation = vec_from_value(value, "capabilityInvocation")?;
+        let capability_delegation = vec_from_value(value, "capabilityDelegation")?;
+        let beacon = vec_from_object(value, "beacon", |beacon| {
+            let ty = string_from_object(beacon, "type")?.parse()?;
+            let descriptor =
+                Address::from_bip21(string_from_object(beacon, "descriptor")?, network)?;
+            let min_confirmations_required = u32::try_from(
+                int_from_object(beacon, "minimumConfirmationsRequired")
+                    .map_err(|_| expected_int_error::<u32>())?,
+            )
+            .map_err(|_| expected_int_error::<u32>())?;
+
+            Ok(Beacon::new(ty, descriptor, min_confirmations_required))
         })?;
 
         Ok(DocumentFields {

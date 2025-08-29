@@ -127,7 +127,9 @@ impl Traversal {
                 let mut updates = self.process_beacon_signals(next_signals)?;
 
                 // Step 9.
-                updates.as_mut_slice().sort_unstable_by_key(|update| update.target_version_id);
+                updates
+                    .as_mut_slice()
+                    .sort_unstable_by_key(|update| update.target_version_id);
 
                 todo!()
             }
@@ -211,23 +213,26 @@ impl Traversal {
         &self,
         beacon_signals: Vec<NextSignal>,
     ) -> Result<Vec<Update>, Error> {
-        beacon_signals.into_iter().map(|beacon_signal| {
-            let expected_hash = beacon_signal.signal_bytes;
-            let signal_metadata = self
-                .signals_metadata
-                .get(&expected_hash)
-                .ok_or(Error::SidecarDataNotFound)?;
+        beacon_signals
+            .into_iter()
+            .map(|beacon_signal| {
+                let expected_hash = beacon_signal.signal_bytes;
+                let signal_metadata = self
+                    .signals_metadata
+                    .get(&expected_hash)
+                    .ok_or(Error::SidecarDataNotFound)?;
 
-            let update = match beacon_signal.beacon_type {
-                BeaconType::Singleton => {
-                    Self::process_singleton_beacon_signal(expected_hash, signal_metadata)?
-                }
-                BeaconType::Map => todo!(),
-                BeaconType::SparseMerkleTree => todo!(),
-            };
+                let update = match beacon_signal.beacon_type {
+                    BeaconType::Singleton => {
+                        Self::process_singleton_beacon_signal(expected_hash, signal_metadata)?
+                    }
+                    BeaconType::Map => todo!(),
+                    BeaconType::SparseMerkleTree => todo!(),
+                };
 
-            Ok(update)
-        }).collect()
+                Ok(update)
+            })
+            .collect()
     }
 
     fn process_singleton_beacon_signal(
