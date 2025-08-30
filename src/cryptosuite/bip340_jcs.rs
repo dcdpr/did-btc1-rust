@@ -1,36 +1,38 @@
-use super::Error;
+use super::CryptoSuite;
+use super::transformation::{JcsTransformation, Transformation};
 use super::utils::{bip340_sign, bip340_verify, hash_sha256, multibase_decode, multibase_encode};
-use crate::cryptosuite::CryptoSuite;
 use crate::document::Document;
-use crate::proof::{Proof, ProofOptions, VerificationResult};
-use crate::transformation::RdfcTransformation;
-use crate::transformation::Transformation;
-use secp256k1::XOnlyPublicKey;
+use crate::error::Error;
+use crate::key::PublicKey;
+use crate::zcap::proof::{Proof, ProofOptions, ProofType, VerificationResult};
+use secp256k1::constants::{
+    MESSAGE_SIZE, PUBLIC_KEY_SIZE, SCHNORR_SIGNATURE_SIZE, SECRET_KEY_SIZE,
+};
 use serde_json::Value;
 
-/// BIP340 RDFC cryptographic suite implementation
-pub struct Bip340RdfcSuite {
-    transformation: RdfcTransformation,
+/// BIP340 JCS cryptographic suite implementation
+pub(crate) struct Bip340JcsSuite {
+    transformation: JcsTransformation,
 }
 
-impl Bip340RdfcSuite {
-    /// Create a new BIP340 RDFC suite
-    pub fn new() -> Self {
+impl Bip340JcsSuite {
+    /// Create a new BIP340 JCS suite
+    pub(crate) fn new() -> Self {
         Self {
-            transformation: RdfcTransformation::new(),
+            transformation: JcsTransformation::new(),
         }
     }
 }
 
-impl Default for Bip340RdfcSuite {
+impl Default for Bip340JcsSuite {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl CryptoSuite for Bip340RdfcSuite {
+impl CryptoSuite for Bip340JcsSuite {
     fn name(&self) -> &'static str {
-        "bip340-rdfc-2025"
+        "bip340-jcs-2025"
     }
 
     fn create_proof(&self, document: &Document, options: &ProofOptions) -> Result<Document, Error> {
@@ -53,6 +55,10 @@ impl CryptoSuite for Bip340RdfcSuite {
                 Value::String(self.name().to_string()),
             );
         }
+
+        // Add document context to proof if present
+        // todo: commented since it wasn't working with new Document embedded types
+        // proof_options.insert("@context".to_string(), Value::from_iter(document.get_context()));
 
         // Create proof config
         let proof_config = self.configure_proof(document, options)?;
@@ -79,42 +85,48 @@ impl CryptoSuite for Bip340RdfcSuite {
         )))?;
 
         // Add proof to document
-        document.with_proof(&proof)
+        Ok(document.with_proof(&proof)?)
     }
 
     fn verify_proof(&self, document: &Document) -> Result<VerificationResult, Error> {
         // Get proof from document
         let proof = document.get_proof().ok_or_else(|| {
-            Error::ProofVerification("Document does not contain a proof".to_string())
+            super::Error::ProofVerification("Document does not contain a proof".to_string())
         })?;
 
         // Check proof type and cryptosuite
-        if proof.type_ != crate::proof::ProofType::DataIntegrityProof {
-            return Err(Error::ProofVerification(format!(
+        if proof.type_ != ProofType::DataIntegrityProof {
+            return Err(super::Error::ProofVerification(format!(
                 "Unsupported proof type: {:?}",
                 proof.type_
-            )));
+            )))?;
         }
 
         if proof.cryptosuite != self.name() {
-            return Err(Error::ProofVerification(format!(
+            return Err(super::Error::ProofVerification(format!(
                 "Unsupported cryptosuite: {}",
                 proof.cryptosuite
-            )));
+            )))?;
         }
 
         // Remove proof from document
         let unsecured_document = document.without_proof();
 
-        // Create proof options from proof
+        // Create proof options
         let mut proof_options = ProofOptions::new();
-        for (key, value) in proof.context.iter().flat_map(|c| match c {
-            Value::Object(map) => map
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<Vec<_>>(),
-            _ => vec![],
-        }) {
+        for (key, value) in document
+            .get_proof()
+            .unwrap()
+            .context
+            .iter()
+            .flat_map(|c| match c {
+                Value::Object(map) => map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>(),
+                _ => vec![],
+            })
+        {
             proof_options.options.insert(key, value);
         }
 
@@ -144,7 +156,7 @@ impl CryptoSuite for Bip340RdfcSuite {
     }
 
     fn transform(&self, document: &Document, options: &ProofOptions) -> Result<Vec<u8>, Error> {
-        self.transformation.transform(document, options)
+        Ok(self.transformation.transform(document, options)?)
     }
 
     fn hash(&self, transformed_data: &[u8], proof_config: &[u8]) -> Result<Vec<u8>, Error> {
@@ -180,7 +192,7 @@ impl CryptoSuite for Bip340RdfcSuite {
         }
 
         if let Some(Value::String(suite)) = proof_config.get("cryptosuite") {
-            if suite != "bip340-rdfc-2025" {
+            if suite != "bip340-jcs-2025" {
                 return Err(Error::InvalidProofConfig(format!(
                     "Unsupported cryptosuite: {suite}"
                 )));
@@ -202,17 +214,18 @@ impl CryptoSuite for Bip340RdfcSuite {
             }
         }
 
-        // Add document context
+        // Add document context if present
         // todo: commented since it wasn't working with new Document embedded types
-        // proof_config.insert("@context".to_string(), Value::from_iter(document.get_context()));
+        // proof_options.insert("@context".to_string(), Value::from_iter(document.get_context()));
 
-        // Apply RDFC canonicalization to proof config
-        let _config_value = Value::Object(serde_json::Map::from_iter(proof_config));
+        // Apply JCS canonicalization to proof config
+        let config_value = Value::Object(serde_json::Map::from_iter(proof_config));
 
-        // Temporary placeholder for RDFC
-        Err(Error::Canonicalization(
-            "RDF Dataset Canonicalization not yet implemented".to_string(),
-        ))
+        let canonical_config = serde_jcs::to_vec(&config_value).map_err(|e| {
+            super::Error::Canonicalization(format!("JCS canonicalization failed: {e:?}"))
+        })?;
+
+        Ok(canonical_config)
     }
 
     fn serialize_proof(&self, hash_data: &[u8], options: &ProofOptions) -> Result<Vec<u8>, Error> {
@@ -222,26 +235,28 @@ impl CryptoSuite for Bip340RdfcSuite {
             .get("verificationMethod")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                Error::ProofGeneration("Missing verificationMethod in proof options".to_string())
+                super::Error::ProofGeneration(
+                    "Missing verificationMethod in proof options".to_string(),
+                )
             })?;
 
-        // Retrieve the private key from storage
-        // ...For this stub, we'll just generate a dummy signature
+        // In a real implementation, retrieve the private key associated with
+        // the "verificationMethod"
+        // For this stub, we'll just generate a dummy signature
 
         // TODO: Implement actual key retrieval
-        // For now, just return a mock signature
-        let private_key_bytes = [0u8; 32]; // Placeholder
+        let private_key_bytes = [0u8; SECRET_KEY_SIZE]; // Placeholder
 
         // Ensure hash data is exactly 32 bytes
-        let hash_array: [u8; 32] = if hash_data.len() == 32 {
-            let mut arr = [0u8; 32];
+        let hash_array: [u8; MESSAGE_SIZE] = if hash_data.len() == MESSAGE_SIZE {
+            let mut arr = [0u8; MESSAGE_SIZE];
             arr.copy_from_slice(hash_data);
             arr
         } else {
-            return Err(Error::Cryptographic(format!(
-                "Hash data must be 32 bytes, got {}",
+            return Err(super::Error::Cryptographic(format!(
+                "Hash data must be {MESSAGE_SIZE} bytes, got {}",
                 hash_data.len()
-            )));
+            )))?;
         };
 
         // Sign hash with BIP340
@@ -258,35 +273,41 @@ impl CryptoSuite for Bip340RdfcSuite {
         // For now, just create a mock public key
 
         // Convert hash data to 32-byte array
-        let hash_array: [u8; 32] = if hash_data.len() == 32 {
-            let mut arr = [0u8; 32];
+        let hash_array: [u8; MESSAGE_SIZE] = if hash_data.len() == MESSAGE_SIZE {
+            let mut arr = [0u8; MESSAGE_SIZE];
             arr.copy_from_slice(hash_data);
             arr
         } else {
-            return Err(Error::Cryptographic(format!(
-                "Hash data must be 32 bytes, got {}",
+            return Err(super::Error::Cryptographic(format!(
+                "Hash data must be {MESSAGE_SIZE} bytes, got {}",
                 hash_data.len()
-            )));
+            )))?;
         };
 
         // Convert signature to 64-byte array
-        let signature: [u8; 64] = if proof_bytes.len() == 64 {
-            let mut arr = [0u8; 64];
+        let signature: [u8; SCHNORR_SIGNATURE_SIZE] = if proof_bytes.len() == SCHNORR_SIGNATURE_SIZE
+        {
+            let mut arr = [0u8; SCHNORR_SIGNATURE_SIZE];
             arr.copy_from_slice(proof_bytes);
             arr
         } else {
-            return Err(Error::Cryptographic(format!(
-                "Signature must be 64 bytes, got {}",
+            return Err(super::Error::Cryptographic(format!(
+                "Signature must be {SCHNORR_SIGNATURE_SIZE} bytes, got {}",
                 proof_bytes.len()
-            )));
+            )))?;
         };
 
         // Mock public key for now
-        let public_key_bytes = [0u8; 32]; // Placeholder
-        let public_key = XOnlyPublicKey::from_slice(&public_key_bytes)
-            .map_err(|e| Error::Key(format!("Invalid public key: {e:?}")))?;
+        let public_key_bytes = [0u8; PUBLIC_KEY_SIZE]; // Placeholder
+        // let public_key = XOnlyPublicKey::from_slice(&public_key_bytes)
+        //     .map_err(|e| Error::Key(format!("Invalid public key: {e:?}")))?;
+        let public_key = PublicKey::from_slice(&public_key_bytes)?;
 
         // Verify signature
-        bip340_verify(&hash_array, &signature, &public_key)
+        Ok(bip340_verify(
+            &hash_array,
+            &signature,
+            &public_key.x_only_public_key().0,
+        )?)
     }
 }

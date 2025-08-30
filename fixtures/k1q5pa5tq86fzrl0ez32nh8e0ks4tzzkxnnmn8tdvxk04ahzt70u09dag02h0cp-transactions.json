@@ -247,56 +247,5 @@
       "block_hash": "0000014a691693c131e003f49c2a0f4403913422879f9f607ee04942e9e37199",
       "block_time": 1750425431
     }
-  },
-  {
-    "txid": "f6a0bb040bb43341c24c3803b87f1959001ab41ddbabbe18b0e7c40bdf901247",
-    "version": 1,
-    "locktime": 0,
-    "vin": [
-      {
-        "txid": "83928822546ca24f5ea3fe2e5927758ea1bd4c65028dccfa7ebd704674865584",
-        "vout": 1,
-        "prevout": {
-          "scriptpubkey": "00149b99110a310460a8cbf428144fd5796b451ef003",
-          "scriptpubkey_asm": "OP_0 OP_PUSHBYTES_20 9b99110a310460a8cbf428144fd5796b451ef003",
-          "scriptpubkey_type": "v0_p2wpkh",
-          "scriptpubkey_address": "tb1qnwv3zz33q3s23jl59q2yl4teddz3auqr2hqhhl",
-          "value": 958000
-        },
-        "scriptsig": "",
-        "scriptsig_asm": "",
-        "witness": [
-          "304402203069dacff86865c79ce098366008f630066e49e028a0980789f443034fd6661602204a3781cadddf7472536934621ad32a7eaa27e74da5712f42139a2ce069888e1401",
-          "032c7236caed0e065f9b4570deeb5e4e917c9f23cb81d797b06e6348cf2c7dfa1a"
-        ],
-        "is_coinbase": false,
-        "sequence": 4294967295
-      }
-    ],
-    "vout": [
-      {
-        "scriptpubkey": "0014c434f1d65acefa7355097fae859e26ad33aa3da3",
-        "scriptpubkey_asm": "OP_0 OP_PUSHBYTES_20 c434f1d65acefa7355097fae859e26ad33aa3da3",
-        "scriptpubkey_type": "v0_p2wpkh",
-        "scriptpubkey_address": "tb1qcs60r4j6ema8x4gf07hgt83x45e650dr97q3qv",
-        "value": 10000
-      },
-      {
-        "scriptpubkey": "00149b99110a310460a8cbf428144fd5796b451ef003",
-        "scriptpubkey_asm": "OP_0 OP_PUSHBYTES_20 9b99110a310460a8cbf428144fd5796b451ef003",
-        "scriptpubkey_type": "v0_p2wpkh",
-        "scriptpubkey_address": "tb1qnwv3zz33q3s23jl59q2yl4teddz3auqr2hqhhl",
-        "value": 944000
-      }
-    ],
-    "size": 222,
-    "weight": 561,
-    "fee": 4000,
-    "status": {
-      "confirmed": true,
-      "block_height": 2219065,
-      "block_hash": "000001359dd53633f93b85245f410d289db8b7db77ffafd5aef620ee2225804b",
-      "block_time": 1750769918
-    }
   }
 ]

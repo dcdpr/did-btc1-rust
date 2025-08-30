@@ -524,11 +524,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_invalid_genesis_length() {
-        // todo: ignored until dan constructs plausible "k1" bech32 string with wrong number of bytes
-        let bstring = "k1ru0p68qmrgv3s9ckz52pxys3zq8surgvpv9qjzq8qczsgqczqyqqncvqap";
-        let dr: DecodedResult = decode(bstring).unwrap();
+        let encoded = bech32_rust::encode(HRP_KEY, b"foo").unwrap();
+        let dr: DecodedResult = decode(encoded).unwrap();
 
         let id_type = IdType::try_from(&dr);
         assert!(matches!(id_type, Err(Error::InvalidGenesisLength(_, _))));

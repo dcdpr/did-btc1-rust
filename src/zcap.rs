@@ -63,24 +63,23 @@
 //! # Ok(())
 //! # }
 //! ```
-pub mod invocation;
-pub mod root_capability;
 
-pub use invocation::{
-    CapabilityInvocationOptions, create_capability_invocation_proof,
-    verify_capability_invocation_proof,
-};
-pub use root_capability::{RootCapability, dereference_root_capability, derive_root_capability};
+// TODO: This module needs a lot of work!
+#![allow(dead_code)]
+
+pub(crate) mod invocation;
+pub(crate) mod proof;
+pub(crate) mod root_capability;
 
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
 /// ZCAP-LD context URL
-pub const ZCAP_CONTEXT: &str = "https://w3id.org/zcap/v1";
+pub(crate) const ZCAP_CONTEXT: &str = "https://w3id.org/zcap/v1";
 
 /// Standard capability actions for DID operations
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CapabilityAction {
+pub(crate) enum CapabilityAction {
     /// Write action - allows updating DID documents
     Write,
     /// Read action - allows reading DID documents
@@ -91,7 +90,7 @@ pub enum CapabilityAction {
 
 impl CapabilityAction {
     /// Convert to string representation
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         match self {
             CapabilityAction::Write => "Write",
             CapabilityAction::Read => "Read",
@@ -111,12 +110,12 @@ impl From<&str> for CapabilityAction {
 }
 
 /// Common ZCAP validation functions
-pub mod validation {
+pub(crate) mod validation {
     use super::*;
 
     /// Validate that a capability ID follows the expected format
     /// Format: urn:zcap:root:{url_encoded_did}
-    pub fn validate_capability_id(capability_id: &str) -> Result<()> {
+    pub(crate) fn validate_capability_id(capability_id: &str) -> Result<()> {
         let components: Vec<&str> = capability_id.split(':').collect();
 
         if components.len() != 4 {
@@ -142,7 +141,7 @@ pub mod validation {
     }
 
     /// Extract the DID identifier from a capability ID
-    pub fn extract_did_from_capability_id(capability_id: &str) -> Result<String> {
+    pub(crate) fn extract_did_from_capability_id(capability_id: &str) -> Result<String> {
         validate_capability_id(capability_id)?;
 
         let components: Vec<&str> = capability_id.split(':').collect();

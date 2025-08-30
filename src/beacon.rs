@@ -44,9 +44,9 @@ impl AddressExt for Address {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Beacon {
+    id: String,
     pub(crate) ty: Type,
     pub(crate) descriptor: Address,
-    pub(crate) min_confirmations_required: u32, // todo: need to figure out how to make this optional in the json @context
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,19 +80,16 @@ impl fmt::Display for Type {
 }
 
 impl Beacon {
-    pub(crate) fn new(ty: Type, descriptor: Address, min_confirmations_required: u32) -> Self {
-        Self {
-            ty,
-            descriptor,
-            min_confirmations_required,
-        }
+    pub(crate) fn new(id: String, ty: Type, descriptor: Address) -> Self {
+        Self { id, ty, descriptor }
     }
 
     pub(crate) fn into_json(self) -> Value {
         json!({
+            "id": self.id,
             "type": self.ty.to_string(),
-            "descriptor": format!("bitcoin:{}", self.descriptor),
-            "minimumConfirmationsRequired": self.min_confirmations_required,
+            "serviceEndpoint": format!("bitcoin:{}", self.descriptor),
+            // "minimumConfirmationsRequired": self.min_confirmations_required,
         })
     }
 }

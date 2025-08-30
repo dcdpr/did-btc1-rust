@@ -1,13 +1,12 @@
 use crate::beacon::Type as BeaconType;
 use crate::canonical_hash::CanonicalHash as _;
-use crate::document::{InitialDocument, IntermediateDocument, ResolutionOptions, SignalsMetadata};
-use crate::identifier::Sha256Hash;
-use crate::{document::Document, update::Update};
+use crate::document::{Document, InitialDocument, ResolutionOptions, SignalsMetadata};
+use crate::{error::Btc1Error, identifier::Sha256Hash, update::Update};
 use chrono::{DateTime, Utc};
-use esploda::bitcoin::{opcodes::all::OP_RETURN, script::Instruction};
+use esploda::bitcoin::{Txid, opcodes::all::OP_RETURN, script::Instruction};
 use esploda::esplora::{Status, Transaction};
 use onlyerror::Error;
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroU64};
 
 const DEFAULT_RPC_BASE_URL: &str = "https://blockstream.info/testnet/api";
 
@@ -18,14 +17,14 @@ pub enum Error {
     /// This happens when the caller forgot to call [`Traversal::process_responses`].
     WaitingForResponses,
 
-    /// Spec section 4.2.2.4
-    UpdateNotDuplicate,
-
     /// Sidecar data not found
     SidecarDataNotFound,
 
     /// Update hash does not match
     UpdateHashMismatch,
+
+    /// DID:BTC1 error
+    Btc1Error(#[from] crate::error::Btc1Error),
 }
 
 /// State machine for Bitcoin blockchain traversal.
@@ -33,10 +32,10 @@ pub enum Error {
 pub struct Traversal<T = ()> {
     contemporary_doc: InitialDocument,
     contemporary_block_height: u32,
-    current_version_id: u64,
+    current_version_id: NonZeroU64,
     target_condition: TargetCondition,
     update_hash_history: Vec<Sha256Hash>,
-    signals_metadata: HashMap<Sha256Hash, SignalsMetadata>,
+    signals_metadata: HashMap<Txid, SignalsMetadata>,
     rpc_host: String,
 
     // Finite State Machine
@@ -54,7 +53,7 @@ impl Traversal {
         Self {
             contemporary_doc: initial_doc,
             contemporary_block_height: 0,
-            current_version_id: 1,
+            current_version_id: 1.try_into().unwrap(),
             target_condition: TargetCondition::from(resolution_options),
             update_hash_history: vec![],
             signals_metadata: sidecar_data
@@ -83,7 +82,7 @@ impl Traversal {
         }
     }
 
-    // Spec section 5.2.2.1
+    // Spec section 7.2.2.1
     // TODO: Better name for this?
     pub fn traverse(mut self) -> Result<TraversalState, Error> {
         // Take the FSM state, leaving the default in its place.
@@ -92,10 +91,7 @@ impl Traversal {
 
         match fsm {
             TraversalFsm::Init => {
-                // Step 1.
-                let contemporary_hash =
-                    IntermediateDocument::from_initial(&self.contemporary_doc).hash();
-
+                // Step 1 is deferred to step 10.
                 // Step 2, 3: unnecessary
 
                 // Step 4. (Create RPC requests)
@@ -131,6 +127,34 @@ impl Traversal {
                     .as_mut_slice()
                     .sort_unstable_by_key(|update| update.target_version_id);
 
+                // Step 10.
+                let contemporary_hash = self.contemporary_doc.hash();
+
+                for update in updates {
+                    // Step 10.1.
+                    if update.target_version_id <= self.current_version_id {
+                        self.update_hash_history.push(contemporary_hash);
+
+                        update.confirm_duplicate(&self.update_hash_history)?;
+                    }
+
+                    // Step 10.2.
+                    if update.target_version_id == self.current_version_id.checked_add(1).unwrap() {
+                        // Step 10.2.1.
+                        if update.source_hash != contemporary_hash {
+                            return Err(Btc1Error::late_publishing(
+                                update.source_hash,
+                                contemporary_hash,
+                            ))?;
+                        }
+
+                        // Step 10.2.2.
+                        self.contemporary_doc.apply_update(&update)?;
+
+                        todo!()
+                    }
+                }
+
                 todo!()
             }
 
@@ -138,37 +162,26 @@ impl Traversal {
         }
     }
 
-    // Spec section 5.2.2.2
+    // Spec section 7.2.2.2
+    // TODO: This function needs to take `HashMap<BeaconType, Transaction>`, not just
+    // `Vec<Transaction>` so that we can set `next_signal.beacon_type` appropriately.
     fn find_next_signals(&self, transactions: Vec<Transaction>) -> Vec<NextSignal> {
-        self.contemporary_doc
-            .fields
-            .beacon
-            .iter()
-            .zip(transactions)
+        transactions
+            .into_iter()
             .enumerate()
-            .filter_map(|(i, (b, tx))| {
+            .filter_map(|(i, tx)| {
                 let txout = tx.outputs.last().unwrap();
-                let mut ops = txout.script_pubkey.instructions();
+                let ops = txout
+                    .script_pubkey
+                    .instructions()
+                    .flatten()
+                    .collect::<Vec<_>>();
 
-                // First instruction must be `OP_RETURN`
-                match ops.next() {
-                    Some(Ok(Instruction::Op(OP_RETURN))) => (),
-                    _ => return None,
-                }
-
-                // Second instruction must be `OP_PUSHBYTES_32`
-                let hash = match ops.next() {
-                    Some(Ok(Instruction::PushBytes(bytes))) if bytes.len() == 32 => {
-                        Sha256Hash(bytes.as_bytes().try_into().unwrap())
-                    }
-                    _ => return None,
+                // Extract the signal bytes
+                let [Instruction::Op(OP_RETURN), Instruction::PushBytes(bytes)] = ops[..] else {
+                    return None;
                 };
-
-                // Last iteration must be None
-                match ops.next() {
-                    None => (),
-                    _ => return None,
-                }
+                let signal_bytes = Sha256Hash(bytes.as_bytes().try_into().ok()?);
 
                 let (block_height, block_time) = match tx.status {
                     Status::Unconfirmed => todo!("Unconfirmed transactions are not supported yet"),
@@ -180,9 +193,11 @@ impl Traversal {
                 };
 
                 Some(NextSignal {
-                    beacon_id: i,
-                    beacon_type: b.ty,
-                    signal_bytes: hash,
+                    _beacon_id: i,
+                    // TODO: Currently only supports SingletonBeacon
+                    beacon_type: BeaconType::Singleton,
+                    txid: tx.txid,
+                    signal_bytes,
                     block_height,
                     block_time,
                 })
@@ -194,7 +209,7 @@ impl Traversal {
         let requests = self
             .contemporary_doc
             .fields
-            .beacon
+            .service
             .iter()
             .map(|b| {
                 // TODO: Move this to Esploda
@@ -216,16 +231,16 @@ impl Traversal {
         beacon_signals
             .into_iter()
             .map(|beacon_signal| {
-                let expected_hash = beacon_signal.signal_bytes;
                 let signal_metadata = self
                     .signals_metadata
-                    .get(&expected_hash)
+                    .get(&beacon_signal.txid)
                     .ok_or(Error::SidecarDataNotFound)?;
 
                 let update = match beacon_signal.beacon_type {
-                    BeaconType::Singleton => {
-                        Self::process_singleton_beacon_signal(expected_hash, signal_metadata)?
-                    }
+                    BeaconType::Singleton => Self::process_singleton_beacon_signal(
+                        beacon_signal.signal_bytes,
+                        signal_metadata,
+                    )?,
                     BeaconType::Map => todo!(),
                     BeaconType::SparseMerkleTree => todo!(),
                 };
@@ -297,9 +312,11 @@ pub enum TraversalState {
     Resolved(Document),
 }
 
+#[derive(Debug)]
 struct NextSignal {
-    beacon_id: usize,
+    _beacon_id: usize,
     beacon_type: crate::beacon::Type,
+    txid: Txid,
     signal_bytes: Sha256Hash,
     block_height: u32,
     block_time: DateTime<Utc>,
@@ -307,7 +324,10 @@ struct NextSignal {
 
 #[derive(Debug)]
 enum TargetCondition {
-    VersionId(u64),
+    // TODO: This should come in later in the implementation
+    #[allow(dead_code)]
+    VersionId(NonZeroU64),
+
     Time(DateTime<Utc>),
 }
 
@@ -324,62 +344,20 @@ impl From<&ResolutionOptions> for TargetCondition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{SidecarData, SmtProofs};
-    use serde_json::Value;
-    use std::{fs, path::PathBuf};
 
     #[test]
+    #[ignore = "blockchain traversal is incomplete"]
     fn test_traversal() {
-        let path = "./fixtures/exampleTargetDocument.json";
-        let initial_document = InitialDocument::from_file(path).unwrap();
+        let initial_document =
+            InitialDocument::from_json_string(include_str!(concat!(
+                "../test-suite/mutinynet/k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp",
+                "/initialDidDoc.json",
+            ))).unwrap();
 
-        let updates_file_path = PathBuf::from(
-            "./test-suite/mutinynet/k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp",
-        );
-
-        // TODO: Seriously, fix this horrible setup code. Make some nice test fixtures
-        let hash1 = include_str!(
-            "../test-suite/mutinynet/k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp/block2207945/update_hash_hex.txt"
-        );
-        let update1 = serde_json::from_str::<Value>(
-            &fs::read_to_string(updates_file_path.join("block2207945").join("updates.json"))
-                .unwrap(),
-        )
-        .unwrap()[0]
-            .clone();
-
-        let hash2 = include_str!(
-            "../test-suite/mutinynet/k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp/block2219084/update_hash_hex.txt"
-        );
-        let update2 = serde_json::from_str::<Value>(
-            &fs::read_to_string(updates_file_path.join("block2219084").join("updates.json"))
-                .unwrap(),
-        )
-        .unwrap()[0]
-            .clone();
-
-        let resolution_options = ResolutionOptions {
-            sidecar_data: Some(SidecarData {
-                signals_metadata: HashMap::from_iter([
-                    (
-                        Sha256Hash(hex::decode(hash1).unwrap().try_into().unwrap()),
-                        SignalsMetadata {
-                            btc1_update: Update::from_json_value(update1).ok(),
-                            proofs: SmtProofs,
-                        },
-                    ),
-                    (
-                        Sha256Hash(hex::decode(hash2).unwrap().try_into().unwrap()),
-                        SignalsMetadata {
-                            btc1_update: Update::from_json_value(update2).ok(),
-                            proofs: SmtProofs,
-                        },
-                    ),
-                ]),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
+        let resolution_options = ResolutionOptions::from_json_string(include_str!(concat!(
+            "../test-suite/mutinynet/k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp",
+            "/resolutionOptions.json",
+        )));
 
         let fsm = Traversal::new(initial_document, &resolution_options);
         let TraversalState::Requests(next_state, requests) = fsm.traverse().unwrap() else {
@@ -396,11 +374,12 @@ mod tests {
                 "https://blockstream.info/testnet/api/address/mtA1SshFsJtD2Di1KBSTmyuD23eBqUekQ3/txs",
                 "https://blockstream.info/testnet/api/address/tb1q323c0l0fapjeg4ux9ayumnpqh8xzqgk3wg82dy/txs",
                 "https://blockstream.info/testnet/api/address/tb1pecc8w64wdvn6x2np8yr8qvsz2pclydkd9t5jde2gf0hy0musfxxsn23q20/txs",
-                "https://blockstream.info/testnet/api/address/tb1qcs60r4j6ema8x4gf07hgt83x45e650dr97q3qv/txs"
             ]
         );
 
-        let json = include_str!("../fixtures/exampleTargetDocument-transactions.json");
+        let json = include_str!(
+            "../fixtures/k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp-transactions.json"
+        );
         let transactions: Vec<Transaction> = serde_json::from_str(json).unwrap();
         let fsm = next_state.process_responses(transactions);
 

@@ -12,25 +12,25 @@ use serde::{Deserialize, Serialize};
 /// Root capabilities in DID:BTC1 are deterministically derived from DID identifiers
 /// and provide the authorization to update that specific DID's document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RootCapability {
+pub(crate) struct RootCapability {
     /// JSON-LD context - always "https://w3id.org/zcap/v1" for ZCAP-LD
     #[serde(rename = "@context")]
-    pub context: String,
+    pub(crate) context: String,
 
     /// Capability identifier in format: urn:zcap:root:{url_encoded_did}
-    pub id: String,
+    pub(crate) id: String,
 
     /// Controller of the capability (the DID identifier)
-    pub controller: String,
+    pub(crate) controller: String,
 
     /// Target that this capability can invoke actions on (same as controller for root capabilities)
     #[serde(rename = "invocationTarget")]
-    pub invocation_target: String,
+    pub(crate) invocation_target: String,
 }
 
 impl RootCapability {
     /// Create a new root capability
-    pub fn new(capability_id: String, did_identifier: String) -> Self {
+    pub(crate) fn new(capability_id: String, did_identifier: String) -> Self {
         Self {
             context: ZCAP_CONTEXT.to_string(),
             id: capability_id,
@@ -40,7 +40,7 @@ impl RootCapability {
     }
 
     /// Validate that this root capability is well-formed
-    pub fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         // Check context
         if self.context != ZCAP_CONTEXT {
             return Err(Error::Zcap(format!(
@@ -85,21 +85,7 @@ impl RootCapability {
 ///
 /// * `Ok(RootCapability)` - The derived root capability
 /// * `Err(Error)` - If the DID identifier is invalid
-///
-/// # Example
-///
-/// ```rust
-/// use did_btc1::zcap::derive_root_capability;
-///
-/// let did = "did:btc1:k1qqpuwwde82nennsavvf0lqfnlvx7frrgzs57lchr02q8mz49qzaaxmqphnvcx";
-/// let root_cap = derive_root_capability(did)?;
-///
-/// assert_eq!(root_cap.controller, did);
-/// assert_eq!(root_cap.invocation_target, did);
-/// assert!(root_cap.id.starts_with("urn:zcap:root:"));
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-pub fn derive_root_capability(did_identifier: &str) -> Result<RootCapability> {
+pub(crate) fn derive_root_capability(did_identifier: &str) -> Result<RootCapability> {
     // Validate DID identifier format
     if !did_identifier.starts_with("did:btc1:") {
         return Err(Error::Zcap(format!(
@@ -135,20 +121,7 @@ pub fn derive_root_capability(did_identifier: &str) -> Result<RootCapability> {
 ///
 /// * `Ok(RootCapability)` - The dereferenced root capability
 /// * `Err(Error)` - If the capability ID is invalid
-///
-/// # Example
-///
-/// ```rust
-/// use did_btc1::zcap::dereference_root_capability;
-///
-/// let cap_id = "urn:zcap:root:did%3Abtc1%3Ak1qqpuwwde82nennsavvf0lqfnlvx7frrgzs57lchr02q8mz49qzaaxmqphnvcx";
-/// let root_cap = dereference_root_capability(cap_id)?;
-///
-/// assert_eq!(root_cap.id, cap_id);
-/// assert!(root_cap.controller.starts_with("did:btc1:"));
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-pub fn dereference_root_capability(capability_id: &str) -> Result<RootCapability> {
+pub(crate) fn dereference_root_capability(capability_id: &str) -> Result<RootCapability> {
     // Step 2-3: Split and validate components (handled by validation function)
     super::validation::validate_capability_id(capability_id)?;
 
