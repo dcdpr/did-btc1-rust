@@ -1,36 +1,34 @@
 use crate::beacon::{AddressExt as _, Beacon};
+use crate::canonical_hash::CanonicalHash;
 use crate::error::{Btc1Error, ProblemDetails};
 use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, Sha256Hash};
 use crate::key::{PublicKey, PublicKeyExt as _};
 use crate::update::{DocumentPatch, Update};
 use crate::verification::{VerificationMethod, VerificationMethodId};
-use crate::{blockchain::Traversal, identifier::TryNetworkExt, proof::Proof};
-use crate::{canonical_hash::CanonicalHash, json_tools};
+use crate::{blockchain::Traversal, identifier::TryNetworkExt, json_tools, zcap::proof::Proof};
 use chrono::{DateTime, Utc};
-use esploda::bitcoin::Address;
+use esploda::bitcoin::{Address, Txid};
 use onlyerror::Error;
 use serde_json::{Map, Value, json};
-use std::{collections::HashMap, fs, path::Path, str::FromStr};
+use std::{collections::HashMap, fs, num::NonZeroU64, path::Path, str::FromStr};
 
 const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
+// TODO: Needs to be updated (eventually) to "https://btc1.dev/context/v1"
 const DID_BTC1_CONTEXT: &str = "https://did-btc1/TBD/context";
 
 const DID_PLACEHOLDER: &str =
     "did:btc1:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 
-const MIN_CONFIRMATIONS_REQUIRED: u32 = 6;
-
 #[derive(Error, Debug)]
 pub enum Error {
     /// Error during document I/O operations
-    #[error("Document I/O error")]
     DocumentIO(#[from] std::io::Error),
 
     /// Error parsing JSON document
     JsonParse(#[from] serde_json::Error),
 
     /// Error parsing JSON value
-    JsonValue(#[from] json_tools::Error),
+    JsonValue(#[from] json_tools::JsonError),
 
     /// DID Encoding error
     DidEncoding(#[from] crate::identifier::Error),
@@ -81,7 +79,7 @@ pub(crate) struct DocumentFields<T> {
     capability_delegation: Vec<VerificationMethodId>,
 
     // TODO: We really want one-or-more, not zero-or-more
-    pub(crate) beacon: Vec<Beacon>,
+    pub(crate) service: Vec<Beacon>,
 }
 
 impl<T> TryFrom<(&Value, Option<Network>)> for DocumentFields<T>
@@ -89,50 +87,46 @@ where
     T: FromStr + TryNetworkExt,
     VerificationMethodId: FromStr,
     Error: From<<T as FromStr>::Err>,
-    json_tools::Error: From<<T as FromStr>::Err> + From<<VerificationMethodId as FromStr>::Err>,
+    json_tools::JsonError: From<<T as FromStr>::Err> + From<<VerificationMethodId as FromStr>::Err>,
 {
     type Error = Error;
 
     fn try_from((value, network): (&Value, Option<Network>)) -> Result<Self, Self::Error> {
-        let id: T = json_tools::string_from_object(value, "id")?.parse()?;
+        use json_tools::*;
+
+        let id: T = string_from_object(value, "id")?.parse()?;
         let network = id.try_network().or(network).unwrap();
 
         // TODO: Might want to abstract this null-check for required keys.
         if value["@context"].is_null() {
-            return Err(json_tools::Error::JsonMissingElement("@context".into()))?;
+            return Err(JsonError::JsonMissingKey("@context".into()))?;
         }
-        let context = json_tools::vec_from_object(value, "@context", |id| {
-            json_tools::string_from_value(id).map(ToString::to_string)
+        let context = vec_from_object(value, "@context", |id| {
+            string_from_value(id).map(ToString::to_string)
         })?;
 
-        // TODO: All of these are optional. Only `json_tools::vec_from_value` has been fixed
-        let controller = json_tools::vec_from_value(value, "controller")?;
-        let verification_method =
-            json_tools::vec_from_object(value, "verificationMethod", |method| {
-                Ok(VerificationMethod::new(
-                    json_tools::string_from_object(method, "id")?.parse()?,
-                    json_tools::string_from_object(method, "controller")?.parse()?,
-                    PublicKey::from_multikey(json_tools::string_from_object(
-                        method,
-                        "publicKeyMultibase",
-                    )?)?,
-                ))
-            })?;
-        let authentication = json_tools::vec_from_value(value, "authentication")?;
-        let assertion_method = json_tools::vec_from_value(value, "assertionMethod")?;
-        let capability_invocation = json_tools::vec_from_value(value, "capabilityInvocation")?;
-        let capability_delegation = json_tools::vec_from_value(value, "capabilityDelegation")?;
-        let beacon = json_tools::vec_from_object(value, "beacon", |beacon| {
-            Ok(Beacon::new(
-                json_tools::string_from_object(beacon, "type")?.parse()?,
-                Address::from_bip21(
-                    json_tools::string_from_object(beacon, "descriptor")?,
-                    network,
-                )?,
-                // TODO: Use TryInto instead of `as` ... Correctly handle non-u32 numbers.
-                json_tools::int_from_object(beacon, "minimumConfirmationsRequired")
-                    .map(|min| min as u32)?,
+        // TODO: All of these are optional. Only `vec_from_value` has been fixed
+        let controller = vec_from_value(value, "controller")?;
+        let verification_method = vec_from_object(value, "verificationMethod", |method| {
+            Ok(VerificationMethod::new(
+                string_from_object(method, "id")?.parse()?,
+                string_from_object(method, "controller")?.parse()?,
+                PublicKey::from_multikey(string_from_object(method, "publicKeyMultibase")?)?,
             ))
+        })?;
+        let authentication = vec_from_value(value, "authentication")?;
+        let assertion_method = vec_from_value(value, "assertionMethod")?;
+        let capability_invocation = vec_from_value(value, "capabilityInvocation")?;
+        let capability_delegation = vec_from_value(value, "capabilityDelegation")?;
+        // TODO: This will fail when the DID document contains non-Beacon services
+        // https://github.com/dcdpr/did-btc1/issues/170
+        let service = vec_from_object(value, "service", |service| {
+            let id = string_from_object(service, "id")?.to_string();
+            let ty = string_from_object(service, "type")?.parse()?;
+            let descriptor =
+                Address::from_bip21(string_from_object(service, "serviceEndpoint")?, network)?;
+
+            Ok(Beacon::new(id, ty, descriptor))
         })?;
 
         Ok(DocumentFields {
@@ -144,7 +138,7 @@ where
             assertion_method,
             capability_invocation,
             capability_delegation,
-            beacon,
+            service,
         })
     }
 }
@@ -159,7 +153,7 @@ pub struct ResolutionOptions {
     pub expand_relative_urls: bool,
 
     /// The version of the identifier and/or DID document
-    pub version_id: Option<u64>,
+    pub version_id: Option<NonZeroU64>,
 
     /// A timestamp used during resolution as a bound for when to stop resolving
     pub version_time: Option<DateTime<Utc>>,
@@ -172,7 +166,7 @@ pub struct ResolutionOptions {
 pub struct SidecarData {
     pub initial_document: Option<InitialDocument>,
 
-    pub signals_metadata: HashMap<Sha256Hash, SignalsMetadata>,
+    pub signals_metadata: HashMap<Txid, SignalsMetadata>,
 
     // TODO: Using the `url` crate is probably better.
     /// Blockchain RPC URI.
@@ -205,14 +199,18 @@ pub struct Document {
 }
 
 impl Document {
-    // Spec section 4.1.1
-    pub fn from_did_components(did_components: DidComponents) -> Result<(Did, Traversal), Error> {
+    // Spec section 7.1.1
+    pub fn from_did_components(
+        did_components: DidComponents,
+        resolution_options: ResolutionOptions,
+    ) -> Result<(Did, Traversal), Error> {
         let did = Did::from(did_components);
-        let traversal = Self::read(&did, ResolutionOptions::default())?;
+        let traversal = Self::read(&did, resolution_options)?;
+
         Ok((did, traversal))
     }
 
-    // Spec section 4.2
+    // Spec section 7.2
     //
     // TODO: Sans-I/O: This needs to not bake any I/O into the implementation. Instead, this should
     // return a finite state machine that represents the protocol described in the spec. This allows
@@ -223,7 +221,7 @@ impl Document {
         Ok(Self::resolve(initial_document, &resolution_options))
     }
 
-    // Spec section 4.3
+    // Spec section 7.3
     //
     // TODO: Sans-I/O.
     //
@@ -251,19 +249,19 @@ impl Document {
         todo!()
     }
 
-    // Spec section 4.4
+    // Spec section 7.4
     //
     // TODO: Sans-I/O.
     pub fn deactivate(&mut self) -> Result<Self, Error> {
         todo!()
     }
 
-    /// Spec section 4.2.2
+    /// Spec section 7.2.2
     fn resolve(
         initial_document: InitialDocument,
         resolution_options: &ResolutionOptions,
     ) -> Traversal {
-        // TODO: We need a way to capture Spec section 4.2.2, step 6
+        // TODO: We need a way to capture Spec section 7.2.2, step 6
         // This will be resolved by identifying the expected default value for ResolutionOptions::version_id
         crate::blockchain::Traversal::new(initial_document, resolution_options)
     }
@@ -378,7 +376,7 @@ impl InitialDocument {
         })
     }
 
-    // Spec section 4.1.2
+    // Spec section 7.1.2
     /// Create a document from an external intermediate DID Document that has been prepared
     /// externally.
     pub fn from_external_intermediate(
@@ -405,7 +403,7 @@ impl InitialDocument {
         Ok((did, initial_document))
     }
 
-    // Spec section 4.2.1
+    // Spec section 7.2.1
     /// Create an initial document from an existing DID.
     pub fn from_did(did: &Did, resolution_options: &ResolutionOptions) -> Result<Self, Error> {
         match did.components().id_type() {
@@ -414,7 +412,7 @@ impl InitialDocument {
         }
     }
 
-    // Spec section 4.2.1.1
+    // Spec section 7.2.1.1
     fn deterministically_generate(
         did: &Did,
         resolution_options: &ResolutionOptions,
@@ -426,9 +424,13 @@ impl InitialDocument {
         Self::from_json_value(json!({
             "id": did.encode(),
             "@context": [DID_CORE_V1_1_CONTEXT, DID_BTC1_CONTEXT],
+
+            // TODO: The spec does not tell us to do this, but the test vectors expect it
+            "controller": [did.encode()],
+
             "verificationMethod": [{
                 "id": verification_method_id,
-                "type": "MultiKey",
+                "type": "Multikey",
                 "controller": did.encode(),
                 "publicKeyMultibase": did.public_key_unchecked().to_multikey(),
             }],
@@ -436,11 +438,11 @@ impl InitialDocument {
             "assertionMethod": verification_method_ids,
             "capabilityInvocation": verification_method_ids,
             "capabilityDelegation": verification_method_ids,
-            "beacon": beacon.into_iter().map(Beacon::into_json).collect::<Vec<_>>(),
+            "service": beacon.into_iter().map(Beacon::into_json).collect::<Vec<_>>(),
         }))
     }
 
-    // Spec section 4.2.1.2
+    // Spec section 7.2.1.2
     fn resolve_external(
         hash: Sha256Hash,
         resolution_options: &ResolutionOptions,
@@ -463,7 +465,7 @@ impl InitialDocument {
         Ok(initial_document)
     }
 
-    // Spec section 4.2.1.2.1
+    // Spec section 7.2.1.2.1
     fn sidecar_initial_validation(&self, hash: Sha256Hash) -> Result<Self, Error> {
         let intermediate_doc = IntermediateDocument::from_initial(self);
 
@@ -479,13 +481,26 @@ impl InitialDocument {
             Ok(self.clone())
         }
     }
+
+    // Spec Section 7.2.2.5
+    pub(crate) fn apply_update(&mut self, _update: &Update) -> Result<(), crate::error::Btc1Error> {
+        todo!()
+    }
 }
+
+impl AsRef<Value> for InitialDocument {
+    fn as_ref(&self) -> &Value {
+        &self.json_data
+    }
+}
+
+impl CanonicalHash for InitialDocument {}
 
 /// Representation of intermediate DID document, according to did::btc1 specification.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntermediateDocument {
     // TODO: We really want one-or-more, not zero-or-more
-    pub(crate) beacon: Vec<Beacon>,
+    pub(crate) service: Vec<Beacon>,
     json_data: Value,
 }
 
@@ -516,7 +531,7 @@ impl IntermediateDocument {
         let fields = DocumentFields::<String>::try_from((&value, Some(network)))?;
 
         Ok(Self {
-            beacon: fields.beacon,
+            service: fields.service,
             json_data: value,
         })
     }
@@ -536,7 +551,7 @@ impl IntermediateDocument {
         find_and_replace(&mut json_data, did.encode(), DID_PLACEHOLDER);
 
         Self {
-            beacon: initial_doc.fields.beacon.clone(),
+            service: initial_doc.fields.service.clone(),
             json_data,
         }
     }
@@ -561,10 +576,10 @@ fn find_and_replace(value: &mut Value, from: &str, to: &str) {
     }
 }
 
-// Spec section 4.2.1.1.1
+// Spec section 7.2.1.1.1
 fn generate_beacons(
     did: &Did,
-    resolution_options: &ResolutionOptions,
+    _resolution_options: &ResolutionOptions,
 ) -> Result<Vec<Beacon>, Error> {
     use crate::beacon::Type;
 
@@ -573,15 +588,19 @@ fn generate_beacons(
     // TODO: After the `bitcoin` crate is updated, we can remove this extra public key constructor.
     let public_key = esploda::bitcoin::PublicKey::new(did.public_key_unchecked());
 
+    let p2pkh_id = format!("{}#initialP2PKH", did.encode());
+    let p2wpkh_id = format!("{}#initialP2WPKH", did.encode());
+    let p2tr_id = format!("{}#initialP2TR", did.encode());
+
     let p2pkh_beacon = Address::p2pkh(&public_key, network);
     let p2wpkh_beacon = Address::p2wpkh(&public_key, network)?;
     let p2tr_beacon = Address::p2tr(&secp, public_key.inner.into(), None, network);
 
     // TODO: Allow overriding the default minimum confirmations required in `ResolutionOptions`?
     Ok(vec![
-        Beacon::new(Type::Singleton, p2pkh_beacon, MIN_CONFIRMATIONS_REQUIRED),
-        Beacon::new(Type::Singleton, p2wpkh_beacon, MIN_CONFIRMATIONS_REQUIRED),
-        Beacon::new(Type::Singleton, p2tr_beacon, MIN_CONFIRMATIONS_REQUIRED),
+        Beacon::new(p2pkh_id, Type::Singleton, p2pkh_beacon),
+        Beacon::new(p2wpkh_id, Type::Singleton, p2wpkh_beacon),
+        Beacon::new(p2tr_id, Type::Singleton, p2tr_beacon),
     ])
 }
 
@@ -590,7 +609,6 @@ mod tests {
     use super::*;
     use crate::blockchain::TraversalState;
     use esploda::esplora::Transaction;
-    use std::path::PathBuf;
 
     impl Did {
         fn hash_unchecked(&self) -> Sha256Hash {
@@ -601,27 +619,64 @@ mod tests {
         }
     }
 
+    impl ResolutionOptions {
+        pub(crate) fn from_json_string(json: &str) -> Self {
+            let json = serde_json::from_str::<Value>(json).unwrap();
+
+            let signals_metadata = json["sidecarData"]["signalsMetadata"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(txid, metadata)| {
+                    (
+                        txid.parse().unwrap(),
+                        SignalsMetadata {
+                            btc1_update: Update::from_json_value(metadata["updatePayload"].clone())
+                                .ok(),
+                            proofs: SmtProofs,
+                        },
+                    )
+                })
+                .collect();
+
+            ResolutionOptions {
+                sidecar_data: Some(SidecarData {
+                    signals_metadata,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+    }
+
     #[test]
     fn test_document_parse() {
-        let path = PathBuf::from("./fixtures/exampleTargetDocument.json");
-        let doc = Document::from_file(path).unwrap();
+        let doc = Document::from_json_string(include_str!(concat!(
+            "../test-suite/mutinynet/k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp",
+            "/initialDidDoc.json",
+        ))).unwrap();
 
-        assert_eq!(doc.fields.beacon.len(), 4);
-        assert_eq!(doc.fields.verification_method.len(), 2);
+        assert_eq!(doc.fields.service.len(), 3);
+        assert_eq!(doc.fields.verification_method.len(), 1);
     }
 
     #[test]
     fn test_sidecar_initial_validation() {
-        let path = "./fixtures/initialDidDoc.json";
+        let initial_doc = InitialDocument::from_json_string(include_str!(concat!(
+            "../test-suite/regtest/x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf",
+            "/initialDidDoc.json",
+        )))
+        .unwrap();
+
         let resolution_options = ResolutionOptions {
             sidecar_data: Some(SidecarData {
-                initial_document: Some(InitialDocument::from_file(path).unwrap()),
+                initial_document: Some(initial_doc),
                 ..Default::default()
             }),
             ..Default::default()
         };
 
-        let did: Did = "did:btc1:x1qgestr7xmvjpddg0s56ncpsrt8dct8gnrm5kchhxw3meutpu2cwcxegf65v"
+        let did: Did = "did:btc1:x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf"
             .parse()
             .unwrap();
         let hash = did.hash_unchecked();
@@ -634,12 +689,12 @@ mod tests {
         let path = "./fixtures/initialDidDoc-missing-verificationMethod-id.json";
         assert!(matches!(
             InitialDocument::from_file(path),
-            Err(Error::JsonValue(json_tools::Error::JsonMissingElement(key))) if key == "id"
+            Err(Error::JsonValue(json_tools::JsonError::JsonMissingKey(key))) if key == "id"
         ));
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "blockchain traversal is incomplete"]
     fn test_document_from_did_components() {
         let id_type = IdType::from(
             PublicKey::from_slice(
@@ -650,7 +705,12 @@ mod tests {
         );
         let did_components = DidComponents::new(DidVersion::One, Network::Signet, id_type).unwrap();
 
-        let (did, fsm) = Document::from_did_components(did_components).unwrap();
+        let resolution_options = ResolutionOptions::from_json_string(include_str!(concat!(
+            "../test-suite/signet/k1qypa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dagl0mgs4",
+            "/resolutionOptions.json",
+        )));
+
+        let (did, fsm) = Document::from_did_components(did_components, resolution_options).unwrap();
         let TraversalState::Requests(next_state, requests) = fsm.traverse().unwrap() else {
             unreachable!()
         };
@@ -668,8 +728,9 @@ mod tests {
             ],
         );
 
-        // This JSON file has more transactions than we need, but that's ok for testing.
-        let json = include_str!("../fixtures/exampleTargetDocument-transactions.json");
+        let json = include_str!(
+            "../fixtures/k1qypa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dagl0mgs4-transactions.json"
+        );
         let transactions: Vec<Transaction> = serde_json::from_str(json).unwrap();
         let fsm = next_state.process_responses(transactions);
 
@@ -681,9 +742,11 @@ mod tests {
 
     #[test]
     fn test_from_external_intermediate() {
-        let root = PathBuf::from("fixtures");
-        let intermediate_doc = IntermediateDocument::from_file(
-            root.join("external-intermediateDidDoc.json"),
+        let intermediate_doc = IntermediateDocument::from_json_string(
+            include_str!(concat!(
+                "../test-suite/regtest/x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf",
+                "/intermediateDidDoc.json",
+            )),
             Network::Regtest,
         )
         .unwrap();
@@ -694,11 +757,17 @@ mod tests {
         )
         .unwrap();
 
-        let expected_did = fs::read_to_string(root.join("external-did.txt")).unwrap();
+        let expected_did = include_str!(concat!(
+            "../test-suite/regtest/x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf",
+            "/did.txt",
+        ));
         assert_eq!(did.encode(), expected_did.trim());
 
-        let expected_doc =
-            InitialDocument::from_file(root.join("external-initialDidDoc.json")).unwrap();
+        let expected_doc = InitialDocument::from_json_string(include_str!(concat!(
+            "../test-suite/regtest/x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf",
+            "/initialDidDoc.json",
+        )))
+        .unwrap();
         assert_eq!(initial_doc, expected_doc);
     }
 }

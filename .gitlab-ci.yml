@@ -1,5 +1,9 @@
 # TODO: This updates global state (shared by all CI jobs) and doesn't do synchronization or proper cleanup
 .git-access:
+  variables:
+    GIT_SUBMODULE_STRATEGY: recursive
+    # TODO: This is only supported on CI runner v15.11 and newer
+    GIT_SUBMODULE_FORCE_HTTPS: "true"
   before_script:
     - git config --global credential.helper store
     - echo "https://gitlab-ci-token:${CI_JOB_TOKEN}@gl1.dcdpr.com" > ~/.git-credentials
@@ -16,6 +20,15 @@ rustup-update:
     - rustc --version
     - rustup update
     - rustc --version
+
+# TODO: This hack is for the older CI runner we currently use (v15.5)
+git-submodule:
+  stage: .pre
+  needs: []
+  tags:
+    - shell-executor
+  script:
+    - git config --global url."https://github.com/".insteadOf "git@github.com:"
 
 cargo-check:
   extends: .git-access

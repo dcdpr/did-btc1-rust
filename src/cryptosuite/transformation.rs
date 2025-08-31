@@ -1,26 +1,29 @@
+// TODO: This module needs a lot of work!
+#![allow(dead_code)]
+
+use crate::cryptosuite::Error;
 use crate::document::Document;
-use crate::error::{Error, Result};
-use crate::proof::ProofOptions;
+use crate::zcap::proof::ProofOptions;
 use serde_json::Value;
 
 /// Trait for document transformation algorithms
-pub trait Transformation {
+pub(crate) trait Transformation {
     /// Transform a document for cryptographic operations
-    fn transform(&self, document: &Document, options: &ProofOptions) -> Result<Vec<u8>>;
+    fn transform(&self, document: &Document, options: &ProofOptions) -> Result<Vec<u8>, Error>;
 }
 
 /// JSON Canonicalization Scheme (JCS) transformation
-pub struct JcsTransformation;
+pub(crate) struct JcsTransformation;
 
 impl JcsTransformation {
     /// Create a new JCS transformation
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }
 
 impl Transformation for JcsTransformation {
-    fn transform(&self, document: &Document, options: &ProofOptions) -> Result<Vec<u8>> {
+    fn transform(&self, document: &Document, options: &ProofOptions) -> Result<Vec<u8>, Error> {
         // Validate options
         let options_value = options.to_value();
 
@@ -61,17 +64,17 @@ impl Transformation for JcsTransformation {
 }
 
 /// RDF Dataset Canonicalization (RDFC) transformation
-pub struct RdfcTransformation;
+pub(crate) struct RdfcTransformation;
 
 impl RdfcTransformation {
     /// Create a new RDFC transformation
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }
 
 impl Transformation for RdfcTransformation {
-    fn transform(&self, _document: &Document, options: &ProofOptions) -> Result<Vec<u8>> {
+    fn transform(&self, _document: &Document, options: &ProofOptions) -> Result<Vec<u8>, Error> {
         // Validate options
         let options_value = options.to_value();
 

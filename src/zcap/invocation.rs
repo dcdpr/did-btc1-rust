@@ -4,9 +4,10 @@
 //! DID document updates in the DID:BTC1 method. It extends the existing proof
 //! creation functionality with ZCAP-LD specific features.
 
-use super::{CapabilityAction, derive_root_capability};
-use crate::suites::bip340_jcs::Bip340JcsSuite;
-use crate::{CryptoSuite, Document, ProofOptions};
+use super::root_capability::{dereference_root_capability, derive_root_capability};
+use super::{CapabilityAction, proof::ProofOptions};
+use crate::cryptosuite::{CryptoSuite, bip340_jcs::Bip340JcsSuite};
+use crate::document::Document;
 use serde_json::Value;
 
 /// Options for creating capability invocation proofs
@@ -14,23 +15,23 @@ use serde_json::Value;
 /// This extends the standard proof options with ZCAP-LD specific fields
 /// required for capability invocation proofs.
 #[derive(Debug, Clone)]
-pub struct CapabilityInvocationOptions {
+pub(crate) struct CapabilityInvocationOptions {
     /// Base proof options (verification method, created time, etc.)
-    pub base_options: ProofOptions,
+    pub(crate) base_options: ProofOptions,
 
     /// The capability being invoked (typically a root capability ID)
-    pub capability: String,
+    pub(crate) capability: String,
 
     /// The action being authorized (e.g., "Write" for DID updates)
-    pub capability_action: CapabilityAction,
+    pub(crate) capability_action: CapabilityAction,
 
     /// The target that the capability is being invoked against
-    pub invocation_target: String,
+    pub(crate) invocation_target: String,
 }
 
 impl CapabilityInvocationOptions {
     /// Create new capability invocation options
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             base_options: ProofOptions::new(),
             capability: String::new(),
@@ -40,37 +41,37 @@ impl CapabilityInvocationOptions {
     }
 
     /// Set the verification method
-    pub fn with_verification_method(mut self, method: &str) -> Self {
+    pub(crate) fn with_verification_method(mut self, method: &str) -> Self {
         self.base_options = self.base_options.with_verification_method(method);
         self
     }
 
     /// Set the capability being invoked
-    pub fn with_capability(mut self, capability: &str) -> Self {
+    pub(crate) fn with_capability(mut self, capability: &str) -> Self {
         self.capability = capability.to_string();
         self
     }
 
     /// Set the capability action
-    pub fn with_capability_action(mut self, action: CapabilityAction) -> Self {
+    pub(crate) fn with_capability_action(mut self, action: CapabilityAction) -> Self {
         self.capability_action = action;
         self
     }
 
     /// Set the invocation target
-    pub fn with_invocation_target(mut self, target: &str) -> Self {
+    pub(crate) fn with_invocation_target(mut self, target: &str) -> Self {
         self.invocation_target = target.to_string();
         self
     }
 
     /// Set the creation time
-    pub fn with_created(mut self, created: &str) -> Self {
+    pub(crate) fn with_created(mut self, created: &str) -> Self {
         self.base_options = self.base_options.with_created(created);
         self
     }
 
     /// Convert to ProofOptions with ZCAP-LD fields included
-    pub fn to_proof_options(&self) -> Result<ProofOptions> {
+    pub(crate) fn to_proof_options(&self) -> Result<ProofOptions, crate::error::Error> {
         self.validate()?;
 
         let mut options = self.base_options.clone();
@@ -109,13 +110,17 @@ impl CapabilityInvocationOptions {
     }
 
     /// Validate the capability invocation options
-    pub fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<(), crate::error::Error> {
         if self.capability.is_empty() {
-            return Err(Error::Zcap("Capability field is required".to_string()));
+            return Err(crate::error::Error::Zcap(
+                "Capability field is required".to_string(),
+            ));
         }
 
         if self.invocation_target.is_empty() {
-            return Err(Error::Zcap("Invocation target is required".to_string()));
+            return Err(crate::error::Error::Zcap(
+                "Invocation target is required".to_string(),
+            ));
         }
 
         // Validate that capability is a properly formatted capability ID
@@ -125,7 +130,7 @@ impl CapabilityInvocationOptions {
         let did_from_capability =
             super::validation::extract_did_from_capability_id(&self.capability)?;
         if did_from_capability != self.invocation_target {
-            return Err(Error::Zcap(format!(
+            return Err(crate::error::Error::Zcap(format!(
                 "Invocation target '{}' does not match capability target '{did_from_capability}'",
                 self.invocation_target
             )));
@@ -199,10 +204,10 @@ impl Default for CapabilityInvocationOptions {
 /// // Create the signed document (Note: will fail without key resolution)
 /// // let signed_document = create_capability_invocation_proof(&document, &options)?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
-pub fn create_capability_invocation_proof(
+pub(crate) fn create_capability_invocation_proof(
     document: &Document,
     options: &CapabilityInvocationOptions,
-) -> Result<Document> {
+) -> Result<Document, crate::error::Error> {
     // Validate options
     options.validate()?;
 
@@ -210,7 +215,7 @@ pub fn create_capability_invocation_proof(
     let root_capability = if options.capability.starts_with("urn:zcap:root:") {
         derive_root_capability(&options.invocation_target)?
     } else {
-        return Err(Error::Zcap(format!(
+        return Err(crate::error::Error::Zcap(format!(
             "Unsupported capability type: {}",
             options.capability
         )));
@@ -218,7 +223,7 @@ pub fn create_capability_invocation_proof(
 
     // Ensure the capability ID matches what was provided
     if root_capability.id != options.capability {
-        return Err(Error::Zcap(format!(
+        return Err(crate::error::Error::Zcap(format!(
             "Capability ID mismatch: expected '{}', got '{}'",
             options.capability, root_capability.id
         )));
@@ -249,11 +254,11 @@ pub fn create_capability_invocation_proof(
 ///
 /// * `Ok(bool)` - True if the proof is valid and authorized
 /// * `Err(Error)` - If verification fails
-pub fn verify_capability_invocation_proof(
+pub(crate) fn verify_capability_invocation_proof(
     document: &Document,
     expected_invocation_target: &str,
     expected_action: &CapabilityAction,
-) -> Result<bool> {
+) -> Result<bool, crate::error::Error> {
     // Create the cryptographic suite
     let suite = Bip340JcsSuite::new();
 
@@ -267,35 +272,32 @@ pub fn verify_capability_invocation_proof(
     // Extract and validate ZCAP-LD specific fields from the proof
     let proof = document
         .get_proof()
-        .ok_or_else(|| Error::Zcap("Document has no proof".to_string()))?;
+        .ok_or_else(|| crate::error::Error::Zcap("Document has no proof".to_string()))?;
 
     // Check proof purpose
     if proof.proof_purpose != "capabilityInvocation" {
-        return Err(Error::Zcap(format!(
+        return Err(crate::error::Error::Zcap(format!(
             "Expected capabilityInvocation proof purpose, got '{}'",
             proof.proof_purpose
         )));
     }
 
     // Extract ZCAP fields from proof struct
-    let capability = proof
-        .capability
-        .as_ref()
-        .ok_or_else(|| Error::Zcap("Missing capability field in proof".to_string()))?;
+    let capability = proof.capability.as_ref().ok_or_else(|| {
+        crate::error::Error::Zcap("Missing capability field in proof".to_string())
+    })?;
 
-    let capability_action = proof
-        .capability_action
-        .as_ref()
-        .ok_or_else(|| Error::Zcap("Missing capabilityAction field in proof".to_string()))?;
+    let capability_action = proof.capability_action.as_ref().ok_or_else(|| {
+        crate::error::Error::Zcap("Missing capabilityAction field in proof".to_string())
+    })?;
 
-    let invocation_target = proof
-        .invocation_target
-        .as_ref()
-        .ok_or_else(|| Error::Zcap("Missing invocationTarget field in proof".to_string()))?;
+    let invocation_target = proof.invocation_target.as_ref().ok_or_else(|| {
+        crate::error::Error::Zcap("Missing invocationTarget field in proof".to_string())
+    })?;
 
     // Validate invocation target matches expectation
     if invocation_target != expected_invocation_target {
-        return Err(Error::Zcap(format!(
+        return Err(crate::error::Error::Zcap(format!(
             "Invocation target mismatch: expected '{expected_invocation_target}', got '{invocation_target}'"
         )));
     }
@@ -303,7 +305,7 @@ pub fn verify_capability_invocation_proof(
     // Validate capability action matches expectation
     let action = CapabilityAction::from(capability_action.as_str());
     if action != *expected_action {
-        return Err(Error::Zcap(format!(
+        return Err(crate::error::Error::Zcap(format!(
             "Capability action mismatch: expected '{}', got '{capability_action}'",
             expected_action.as_str()
         )));
@@ -313,9 +315,9 @@ pub fn verify_capability_invocation_proof(
     super::validation::validate_capability_id(capability)?;
 
     // Dereference the root capability and validate it matches the invocation target
-    let root_capability = super::dereference_root_capability(capability)?;
+    let root_capability = dereference_root_capability(capability)?;
     if root_capability.invocation_target != expected_invocation_target {
-        return Err(Error::Zcap(format!(
+        return Err(crate::error::Error::Zcap(format!(
             "Root capability target '{}' does not match expected target '{expected_invocation_target}'",
             root_capability.invocation_target
         )));
@@ -342,14 +344,14 @@ pub fn verify_capability_invocation_proof(
 ///
 /// * `Ok(Document)` - The signed DID update payload
 /// * `Err(Error)` - If creation fails
-pub fn create_signed_did_update_payload(
+pub(crate) fn create_signed_did_update_payload(
     did_identifier: &str,
     patch: serde_json::Value,
     source_hash: &str,
     target_hash: &str,
     target_version_id: u32,
     verification_method_id: &str,
-) -> Result<Document, crate::document::Error> {
+) -> Result<Document, crate::error::Error> {
     // Create the unsigned DID update payload
     let mut payload_data = serde_json::Map::new();
 
@@ -532,7 +534,7 @@ mod tests {
     #[test]
     fn test_create_signed_did_update_payload_structure() {
         // This test verifies the structure is correct without relying on key resolution
-        use crate::proof::{Proof, ProofType};
+        use crate::zcap::proof::{Proof, ProofType};
 
         let root_cap = derive_root_capability(TEST_DID).unwrap();
 

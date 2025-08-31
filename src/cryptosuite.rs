@@ -1,50 +1,95 @@
 use crate::document::Document;
-use crate::error::Result;
-use crate::proof::{Proof, ProofOptions, VerificationResult};
+use crate::zcap::proof::{Proof, ProofOptions, VerificationResult};
+use onlyerror::Error;
+
+/// BIP340 JCS cryptosuite implementation
+pub(crate) mod bip340_jcs;
+
+/// BIP340 RDFC cryptosuite implementation
+pub(crate) mod bip340_rdfc;
+
+/// Shared utilities for cryptosuites
+pub(crate) mod utils;
+
+pub(crate) mod transformation;
+
+#[derive(Error, Debug)]
+pub enum Error {
+    /// Error with key operations
+    Key(#[from] crate::key::Error),
+
+    /// Error during proof transformation
+    #[error("Proof transformation error: {0}")]
+    ProofTransformation(String),
+
+    /// Error during proof generation
+    #[error("Proof generation error: {0}")]
+    ProofGeneration(String),
+
+    /// Error during proof verification
+    #[error("Proof verification error: {0}")]
+    ProofVerification(String),
+
+    /// Error with cryptographic operations
+    #[error("Cryptographic error: {0}")]
+    Cryptographic(String),
+
+    /// Error with canonicalization
+    #[error("Canonicalization error: {0}")]
+    Canonicalization(String),
+
+    /// Multibase error
+    Multibase(#[from] multibase::Error),
+}
 
 /// Trait defining the main interface for cryptographic suites
-pub trait CryptoSuite {
+pub(crate) trait CryptoSuite {
     /// Name of the cryptographic suite
     fn name(&self) -> &'static str;
 
     /// Create a proof for a document with given options
-    fn create_proof(&self, document: &Document, options: &ProofOptions) -> Result<Document>;
+    fn create_proof(
+        &self,
+        document: &Document,
+        options: &ProofOptions,
+    ) -> Result<Document, crate::error::Error>;
 
     /// Verify a document with a proof
-    fn verify_proof(&self, document: &Document) -> Result<VerificationResult>;
+    fn verify_proof(&self, document: &Document) -> Result<VerificationResult, crate::error::Error>;
 
     /// Transform a document for hashing
-    fn transform(&self, document: &Document, options: &ProofOptions) -> Result<Vec<u8>>;
+    fn transform(
+        &self,
+        document: &Document,
+        options: &ProofOptions,
+    ) -> Result<Vec<u8>, crate::error::Error>;
 
     /// Hash transformed data
-    fn hash(&self, transformed_data: &[u8], proof_config: &[u8]) -> Result<Vec<u8>>;
+    fn hash(
+        &self,
+        transformed_data: &[u8],
+        proof_config: &[u8],
+    ) -> Result<Vec<u8>, crate::error::Error>;
 
     /// Configure a proof from options
-    fn configure_proof(&self, document: &Document, options: &ProofOptions) -> Result<Vec<u8>>;
+    fn configure_proof(
+        &self,
+        document: &Document,
+        options: &ProofOptions,
+    ) -> Result<Vec<u8>, crate::error::Error>;
 
     /// Serialize a proof
-    fn serialize_proof(&self, hash_data: &[u8], options: &ProofOptions) -> Result<Vec<u8>>;
+    fn serialize_proof(
+        &self,
+        hash_data: &[u8],
+        options: &ProofOptions,
+    ) -> Result<Vec<u8>, crate::error::Error>;
 
     /// Verify a proof
-    fn verify(&self, hash_data: &[u8], proof_bytes: &[u8], options: &Proof) -> Result<bool>;
+    fn verify(
+        &self,
+        hash_data: &[u8],
+        proof_bytes: &[u8],
+        options: &Proof,
+    ) -> Result<bool, crate::error::Error>;
 }
-
-// /// Factory function to instantiate a cryptosuite by name
-// pub fn instantiate_cryptosuite(
-//     cryptosuite: &str,
-//     _options: &ProofOptions,
-// ) -> Result<Box<dyn CryptoSuite>> {
-//     match cryptosuite {
-//         "bip340-jcs-2025" => {
-//             use crate::suites::bip340_jcs::Bip340JcsSuite;
-//             Ok(Box::new(Bip340JcsSuite::new()))
-//         }
-//         "bip340-rdfc-2025" => {
-//             use crate::suites::bip340_rdfc::Bip340RdfcSuite;
-//             Ok(Box::new(Bip340RdfcSuite::new()))
-//         }
-//         _ => Err(crate::error::Error::UnsupportedCryptoSuite(
-//             cryptosuite.to_string(),
-//         )),
-//     }
-// }

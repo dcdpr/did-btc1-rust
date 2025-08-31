@@ -1,19 +1,28 @@
+use crate::identifier::Sha256Hash;
+use esploda::bitcoin::base58;
 use onlyerror::Error;
 use serde_json::Value;
 use std::{fmt::Display, str::FromStr};
 
 #[derive(Error, Debug)]
-pub enum Error {
+pub enum JsonError {
     /// Error converting JSON Value to str
     #[error("Object key `{0}` was expected to be type `{1}`")]
     UnexpectedJsonType(String, ExpectedType),
 
-    /// Missing element
-    #[error("Element `{0}` does not exist")]
-    JsonMissingElement(String),
+    /// Missing object key
+    #[error("Object key `{0}` does not exist")]
+    JsonMissingKey(String),
+
+    /// Invalid SHA256 hash
+    #[error("Invalid SHA256 hash: {0}")]
+    InvalidHash(String),
 
     /// Expected a JSON string
     ExpectedJsonStr,
+
+    /// Invalid Base58 encoding
+    Base58(#[from] esploda::bitcoin::base58::Error),
 
     /// Error with key operations
     Key(#[from] crate::key::Error),
@@ -52,29 +61,47 @@ impl Display for ExpectedType {
     }
 }
 
+pub(crate) fn hash_from_object(value: &Value, key: &str) -> Result<Sha256Hash, JsonError> {
+    Ok(Sha256Hash(
+        base58::decode(string_from_object(value, key)?)?
+            .try_into()
+            .map_err(|_| JsonError::InvalidHash(key.into()))?,
+    ))
+}
+
 /// Returns value[key] as a str if it is a JSON string.
 pub(crate) fn string_from_object<'value>(
     value: &'value Value,
     key: &str,
-) -> Result<&'value str, Error> {
+) -> Result<&'value str, JsonError> {
+    optional_string_from_object(value, key)
+        .map(|maybe_int| maybe_int.ok_or_else(|| JsonError::JsonMissingKey(key.into())))?
+}
+
+/// Returns value[key] as a str if it is a JSON string, or `None` if the key is missing.
+pub(crate) fn optional_string_from_object<'value>(
+    value: &'value Value,
+    key: &str,
+) -> Result<Option<&'value str>, JsonError> {
     let obj = &value[key];
 
     if obj.is_null() {
-        Err(Error::JsonMissingElement(key.into()))
+        Ok(None)
     } else {
         obj.as_str()
-            .ok_or_else(|| Error::UnexpectedJsonType(key.into(), ExpectedType::String))
+            .map(Option::Some)
+            .ok_or_else(|| JsonError::UnexpectedJsonType(key.into(), ExpectedType::String))
     }
 }
 
 /// Returns value[key] as an int if it is a JSON number.
-pub(crate) fn int_from_object(value: &Value, key: &str) -> Result<i64, Error> {
+pub(crate) fn int_from_object(value: &Value, key: &str) -> Result<i64, JsonError> {
     optional_int_from_object(value, key)
-        .map(|maybe_int| maybe_int.ok_or_else(|| Error::JsonMissingElement(key.into())))?
+        .map(|maybe_int| maybe_int.ok_or_else(|| JsonError::JsonMissingKey(key.into())))?
 }
 
 /// Returns value[key] as an int if it is a JSON number, or `None` if the key is missing.
-pub(crate) fn optional_int_from_object(value: &Value, key: &str) -> Result<Option<i64>, Error> {
+pub(crate) fn optional_int_from_object(value: &Value, key: &str) -> Result<Option<i64>, JsonError> {
     let obj = &value[key];
 
     if obj.is_null() {
@@ -82,14 +109,18 @@ pub(crate) fn optional_int_from_object(value: &Value, key: &str) -> Result<Optio
     } else {
         obj.as_i64()
             .map(Option::Some)
-            .ok_or_else(|| Error::UnexpectedJsonType(key.into(), ExpectedType::Number))
+            .ok_or_else(|| JsonError::UnexpectedJsonType(key.into(), ExpectedType::Number))
     }
 }
 
 /// Create a vector of any type from `value[key]` using a map function.
-pub(crate) fn vec_from_object<T, F>(value: &Value, key: &str, map_fn: F) -> Result<Vec<T>, Error>
+pub(crate) fn vec_from_object<T, F>(
+    value: &Value,
+    key: &str,
+    map_fn: F,
+) -> Result<Vec<T>, JsonError>
 where
-    F: Fn(&Value) -> Result<T, Error>,
+    F: Fn(&Value) -> Result<T, JsonError>,
 {
     let obj = &value[key];
 
@@ -97,23 +128,23 @@ where
         Ok(Vec::new())
     } else {
         obj.as_array()
-            .ok_or_else(|| Error::UnexpectedJsonType(key.into(), ExpectedType::Array))?
+            .ok_or_else(|| JsonError::UnexpectedJsonType(key.into(), ExpectedType::Array))?
             .iter()
             .map(map_fn)
-            .collect::<Result<Vec<_>, Error>>()
+            .collect::<Result<Vec<_>, JsonError>>()
     }
 }
 
 /// Returns a string if the JSON value is a string type.
-pub(crate) fn string_from_value(value: &Value) -> Result<&str, Error> {
-    value.as_str().ok_or(Error::ExpectedJsonStr)
+pub(crate) fn string_from_value(value: &Value) -> Result<&str, JsonError> {
+    value.as_str().ok_or(JsonError::ExpectedJsonStr)
 }
 
 /// Create a vector of any type from `value[key]` if it can be parsed from a string.
-pub(crate) fn vec_from_value<T>(value: &Value, key: &str) -> Result<Vec<T>, Error>
+pub(crate) fn vec_from_value<T>(value: &Value, key: &str) -> Result<Vec<T>, JsonError>
 where
     T: FromStr,
-    Error: From<<T as FromStr>::Err>,
+    JsonError: From<<T as FromStr>::Err>,
 {
     vec_from_object(value, key, |v| Ok(string_from_value(v)?.parse()?))
 }
