@@ -1,37 +1,19 @@
-use super::transformation::{JcsTransformation, Transformation};
+use super::transformation::{JcsTransformation, RdfcTransformation, Transformation as _};
 use super::utils::{bip340_sign, bip340_verify, hash_sha256, multibase_decode, multibase_encode};
 use super::{CryptoSuite, Error};
-use crate::document::Document;
-use crate::key::PublicKey;
-use crate::zcap::proof::{Proof, ProofOptions, ProofType, VerificationResult};
+use crate::zcap::proof::{CryptoSuiteName, Proof, ProofOptions, ProofType, VerificationResult};
+use crate::{document::Document, error::Btc1Error, key::PublicKey};
 use secp256k1::constants::{
     MESSAGE_SIZE, PUBLIC_KEY_SIZE, SCHNORR_SIGNATURE_SIZE, SECRET_KEY_SIZE,
 };
 use serde_json::Value;
 
-/// BIP340 JCS cryptographic suite implementation
-pub(crate) struct Bip340JcsSuite {
-    transformation: JcsTransformation,
-}
-
-impl Bip340JcsSuite {
-    /// Create a new BIP340 JCS suite
-    pub(crate) fn new() -> Self {
-        Self {
-            transformation: JcsTransformation::new(),
-        }
-    }
-}
-
-impl Default for Bip340JcsSuite {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CryptoSuite for Bip340JcsSuite {
+impl CryptoSuite {
     fn name(&self) -> &'static str {
-        "bip340-jcs-2025"
+        match self {
+            Self::Jsc => "bip340-jcs-2025",
+            Self::Rdfc => "bip340-rdfc-2025",
+        }
     }
 
     fn create_proof(&self, document: &Document, options: &ProofOptions) -> Result<Document, Error> {
@@ -127,7 +109,7 @@ impl CryptoSuite for Bip340JcsSuite {
         // {
         //     proof_options.options.insert(key, value);
         // }
-        let proof_options = ProofOptions {};
+        let proof_options = ProofOptions::default();
 
         // Decode proof value
         let proof_bytes = multibase_decode(&proof.proof_value)?;
@@ -154,14 +136,18 @@ impl CryptoSuite for Bip340JcsSuite {
         })
     }
 
+    // TODO: Why return `Vec<u8>`? What about `String`?
     fn transform(&self, document: &Document, options: &ProofOptions) -> Result<Vec<u8>, Error> {
-        self.transformation.transform(document, options)
+        match self {
+            Self::Jsc => JcsTransformation::new().transform(document, options),
+            Self::Rdfc => RdfcTransformation::new().transform(document, options),
+        }
     }
 
-    fn hash(&self, transformed_data: &[u8], proof_config: &[u8]) -> Result<Vec<u8>, Error> {
+    fn hash(&self, transformed_data: &[u8], proof_config: &str) -> Result<Vec<u8>, Error> {
         // Concatenate proof config and transformed data
         let mut bytes_to_hash = Vec::with_capacity(proof_config.len() + transformed_data.len());
-        bytes_to_hash.extend_from_slice(proof_config);
+        bytes_to_hash.extend_from_slice(proof_config.as_bytes());
         bytes_to_hash.extend_from_slice(transformed_data);
 
         // Hash with SHA-256
@@ -171,62 +157,37 @@ impl CryptoSuite for Bip340JcsSuite {
 
     fn configure_proof(
         &self,
-        _document: &Document,
-        _options: &ProofOptions,
-    ) -> Result<Vec<u8>, Error> {
-        // TODO: Need to fix ProofOptions
-        let proof_config = std::collections::HashMap::new();
+        document: &Document,
+        options: &ProofOptions,
+    ) -> Result<String, Error> {
+        let canonical_config = match options.cryptosuite {
+            CryptoSuiteName::Jcs => {
+                // Apply JCS canonicalization to proof config
+                let mut config_value = serde_json::json!({
+                    "@context": document.fields.context,
+                    "type": options.suite_type.to_string(),
+                    "cryptosuite": options.cryptosuite.to_string(),
+                    "verificationMethod": options.verification_method,
+                });
 
-        // Validate required fields
-        if let Some(Value::String(type_)) = proof_config.get("type") {
-            if type_ != "DataIntegrityProof" {
-                return Err(Error::InvalidProofConfig(format!(
-                    "Unsupported proof type: {type_}"
-                )));
+                if let Some(created) = options.created.as_ref() {
+                    // TODO: Is this the right time format? It's ISO 8601
+                    config_value["created"] = created.format("%+").to_string().into();
+                }
+
+                serde_jcs::to_string(&config_value).map_err(|e| {
+                    super::Error::Canonicalization(format!("JCS canonicalization failed: {e:?}"))
+                })
             }
-        } else {
-            return Err(Error::InvalidProofConfig(
-                "Proof config must include 'type'".to_string(),
-            ));
-        }
-
-        if let Some(Value::String(suite)) = proof_config.get("cryptosuite") {
-            if suite != "bip340-jcs-2025" {
-                return Err(Error::InvalidProofConfig(format!(
-                    "Unsupported cryptosuite: {suite}"
-                )));
+            CryptoSuiteName::Rdfc => {
+                todo!()
             }
-        } else {
-            return Err(Error::InvalidProofConfig(
-                "Proof config must include 'cryptosuite'".to_string(),
-            ));
-        }
-
-        // Validate created date if present
-        if let Some(Value::String(created)) = proof_config.get("created") {
-            // TODO: Validate datetime format
-            // For now, we'll just check that it's not empty
-            if created.is_empty() {
-                return Err(Error::InvalidProofConfig(
-                    "Invalid 'created' datetime".to_string(),
-                ));
-            }
-        }
-
-        // Add document context if present
-        // todo: commented since it wasn't working with new Document embedded types
-        // proof_options.insert("@context".to_string(), Value::from_iter(document.get_context()));
-
-        // Apply JCS canonicalization to proof config
-        let config_value = Value::Object(serde_json::Map::from_iter(proof_config));
-
-        let canonical_config = serde_jcs::to_vec(&config_value).map_err(|e| {
-            super::Error::Canonicalization(format!("JCS canonicalization failed: {e:?}"))
-        })?;
+        }?;
 
         Ok(canonical_config)
     }
 
+    // TODO: Why return `Vec<u8>`? What about `String`?
     fn serialize_proof(&self, hash_data: &[u8], _options: &ProofOptions) -> Result<Vec<u8>, Error> {
         // TODO: Check options.verificationMethod
 
@@ -255,6 +216,7 @@ impl CryptoSuite for Bip340JcsSuite {
         Ok(signature.to_vec())
     }
 
+    // TODO: Why take `proof_bytes: &[u8]`? What about `&str`?
     fn verify(&self, hash_data: &[u8], proof_bytes: &[u8], proof: &Proof) -> Result<bool, Error> {
         // Get verification method
         let _verification_method_id = &proof.verification_method;
@@ -295,5 +257,16 @@ impl CryptoSuite for Bip340JcsSuite {
 
         // Verify signature
         bip340_verify(&hash_array, &signature, &public_key.x_only_public_key().0)
+    }
+
+    // This is defined by https://www.w3.org/TR/vc-data-integrity/#verify-proof
+    // And it calls Self::verify_proof()
+    pub(crate) fn data_integrity_verify_proof(
+        &self,
+        _media_type: &str,
+        _proof: &Proof,
+        _expected_proof_purpose: &str,
+    ) -> Result<VerificationResult, Btc1Error> {
+        todo!()
     }
 }

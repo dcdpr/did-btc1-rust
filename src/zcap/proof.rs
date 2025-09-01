@@ -1,6 +1,8 @@
 use crate::document::Document;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt;
 
 /// Types of proofs supported by the library
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +38,8 @@ pub(crate) enum ProofPurpose {
     Other(String),
 }
 
+
+
 /// Represents a cryptographic proof
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,11 +63,11 @@ pub struct Proof {
 
     /// When the proof was created (ISO8601 dateTime)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) created: Option<String>,
+    pub(crate) created: Option<DateTime<Utc>>,
 
     /// When the proof expires (ISO8601 dateTime)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) expires: Option<String>,
+    pub(crate) expires: Option<DateTime<Utc>>,
 
     /// Security domain for the proof
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,31 +101,46 @@ pub struct Proof {
     pub(crate) invocation_target: String,
 }
 
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) enum SuiteType {
+    #[default]
+    DataIntegrityProof,
+}
+
+impl fmt::Display for SuiteType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DataIntegrityProof")
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) enum CryptoSuiteName {
+    #[default]
+    Jcs, // todo: remove JCS asap
+    Rdfc,
+}
+
+impl fmt::Display for CryptoSuiteName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Jcs => f.write_str("bip340-jcs-2025"),
+            Self::Rdfc => f.write_str("bip340-rdfc-2025"),
+        }
+    }
+}
+
 /// Options for creating a proof
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProofOptions {
-    // TODO: Need to add the fields required by Data Integrity Schnorr Secp256k1 Cryptosuites
-
-    // SPEC: 3.3.1 Create Proof (bip340-jcs-2025)
-    // @context
-
-    // SPEC: 3.3.5 Proof Configuration (bip340-jcs-2025)
-    // type
-    // cryptosuite
-    // created
-
-    // SPEC: 3.3.6 Proof Serialization (bip340-jcs-2025)
-    // verificationMethod
+    pub(crate) context: Vec<String>,
+    pub(crate) suite_type: SuiteType,
+    pub(crate) cryptosuite: CryptoSuiteName,
+    pub(crate) verification_method: String,
+    pub(crate) created: Option<DateTime<Utc>>,
 }
 
 impl ProofOptions {
-    /// Create a new empty set of proof options
-    pub(crate) fn new() -> Self {
-        Self {
-            // options: HashMap::new(),
-        }
-    }
-
     /// Set the proof type (default is "DataIntegrityProof")
     pub(crate) fn with_type(self, _proof_type: &str) -> Self {
         todo!()
