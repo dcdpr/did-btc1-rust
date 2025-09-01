@@ -263,7 +263,7 @@ impl Document {
     ) -> Traversal {
         // TODO: We need a way to capture Spec section 7.2.2, step 6
         // This will be resolved by identifying the expected default value for ResolutionOptions::version_id
-        crate::blockchain::Traversal::new(initial_document, resolution_options)
+        Traversal::new(initial_document, resolution_options)
     }
 }
 
@@ -483,7 +483,9 @@ impl InitialDocument {
     }
 
     // Spec Section 7.2.2.5
-    pub(crate) fn apply_update(&mut self, _update: &Update) -> Result<(), crate::error::Btc1Error> {
+    pub(crate) fn apply_update(&mut self, update: &Update) -> Result<(), Btc1Error> {
+        let _capability_id = &update.proof.capability;
+
         todo!()
     }
 }

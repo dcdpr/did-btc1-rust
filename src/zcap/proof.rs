@@ -1,8 +1,6 @@
+use crate::document::Document;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
-
-use crate::document::Document;
 
 /// Types of proofs supported by the library
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,7 +46,7 @@ pub struct Proof {
 
     /// Type of proof
     #[serde(rename = "type")]
-    pub(crate) type_: ProofType,
+    pub(crate) proof_type: ProofType,
 
     /// Purpose of the proof
     pub(crate) proof_purpose: String,
@@ -87,113 +85,101 @@ pub struct Proof {
     pub(crate) nonce: Option<String>,
 
     /// Optional JSON-LD context
-    #[serde(rename = "@context", skip_serializing_if = "Option::is_none")]
-    pub(crate) context: Option<Value>,
+    pub(crate) context: Vec<String>,
 
     /// ZCAP: Capability being invoked (for capabilityInvocation proof purpose)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) capability: Option<String>,
+    pub(crate) capability: String,
 
     /// ZCAP: Action being performed with the capability
-    #[serde(rename = "capabilityAction", skip_serializing_if = "Option::is_none")]
-    pub(crate) capability_action: Option<String>,
+    pub(crate) capability_action: String,
 
     /// ZCAP: Target of the capability invocation
-    #[serde(rename = "invocationTarget", skip_serializing_if = "Option::is_none")]
-    pub(crate) invocation_target: Option<String>,
+    pub(crate) invocation_target: String,
 }
 
 /// Options for creating a proof
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProofOptions {
-    /// Key-value pairs of proof options
-    pub(crate) options: HashMap<String, Value>,
+    // TODO: Need to add the fields required by Data Integrity Schnorr Secp256k1 Cryptosuites
+
+    // SPEC: 3.3.1 Create Proof (bip340-jcs-2025)
+    // @context
+
+    // SPEC: 3.3.5 Proof Configuration (bip340-jcs-2025)
+    // type
+    // cryptosuite
+    // created
+
+    // SPEC: 3.3.6 Proof Serialization (bip340-jcs-2025)
+    // verificationMethod
 }
 
 impl ProofOptions {
     /// Create a new empty set of proof options
     pub(crate) fn new() -> Self {
         Self {
-            options: HashMap::new(),
+            // options: HashMap::new(),
         }
     }
 
     /// Set the proof type (default is "DataIntegrityProof")
-    pub(crate) fn with_type(mut self, type_: &str) -> Self {
-        self.options
-            .insert("type".to_string(), Value::String(type_.to_string()));
-        self
+    pub(crate) fn with_type(self, _proof_type: &str) -> Self {
+        todo!()
     }
 
     /// Set the cryptosuite
-    pub(crate) fn with_cryptosuite(mut self, cryptosuite: &str) -> Self {
-        self.options.insert(
-            "cryptosuite".to_string(),
-            Value::String(cryptosuite.to_string()),
-        );
-        self
+    pub(crate) fn with_cryptosuite(self, _cryptosuite: &str) -> Self {
+        todo!()
     }
 
     /// Set the verification method
-    pub(crate) fn with_verification_method(mut self, method: &str) -> Self {
-        self.options.insert(
-            "verificationMethod".to_string(),
-            Value::String(method.to_string()),
-        );
-        self
+    pub(crate) fn with_verification_method(self, _method: &str) -> Self {
+        todo!()
     }
 
     /// Set the proof purpose
-    pub(crate) fn with_proof_purpose(mut self, purpose: &str) -> Self {
-        self.options.insert(
-            "proofPurpose".to_string(),
-            Value::String(purpose.to_string()),
-        );
-        self
+    pub(crate) fn with_proof_purpose(self, _purpose: &str) -> Self {
+        todo!()
     }
 
     /// Set the creation date
-    pub(crate) fn with_created(mut self, created: &str) -> Self {
-        self.options
-            .insert("created".to_string(), Value::String(created.to_string()));
-        self
+    pub(crate) fn with_created(self, _created: &str) -> Self {
+        todo!()
     }
 
-    /// Set the expiration date
-    pub(crate) fn with_expires(mut self, expires: &str) -> Self {
-        self.options
-            .insert("expires".to_string(), Value::String(expires.to_string()));
-        self
-    }
+    // /// Set the expiration date
+    // pub(crate) fn with_expires(mut self, expires: &str) -> Self {
+    //     self.options
+    //         .insert("expires".to_string(), Value::String(expires.to_string()));
+    //     self
+    // }
 
-    /// Set the security domain
-    pub(crate) fn with_domain(mut self, domain: &str) -> Self {
-        self.options
-            .insert("domain".to_string(), Value::String(domain.to_string()));
-        self
-    }
+    // /// Set the security domain
+    // pub(crate) fn with_domain(mut self, domain: &str) -> Self {
+    //     self.options
+    //         .insert("domain".to_string(), Value::String(domain.to_string()));
+    //     self
+    // }
 
-    /// Set the challenge
-    pub(crate) fn with_challenge(mut self, challenge: &str) -> Self {
-        self.options.insert(
-            "challenge".to_string(),
-            Value::String(challenge.to_string()),
-        );
-        self
-    }
+    // /// Set the challenge
+    // pub(crate) fn with_challenge(mut self, challenge: &str) -> Self {
+    //     self.options.insert(
+    //         "challenge".to_string(),
+    //         Value::String(challenge.to_string()),
+    //     );
+    //     self
+    // }
 
-    /// Set the nonce
-    pub(crate) fn with_nonce(mut self, nonce: &str) -> Self {
-        self.options
-            .insert("nonce".to_string(), Value::String(nonce.to_string()));
-        self
-    }
+    // /// Set the nonce
+    // pub(crate) fn with_nonce(mut self, nonce: &str) -> Self {
+    //     self.options
+    //         .insert("nonce".to_string(), Value::String(nonce.to_string()));
+    //     self
+    // }
 
     /// Convert options to a JSON Value
     pub(crate) fn to_value(&self) -> Value {
-        Value::Object(serde_json::Map::from_iter(
-            self.options.iter().map(|(k, v)| (k.clone(), v.clone())),
-        ))
+        todo!();
     }
 }
 

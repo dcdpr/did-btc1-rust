@@ -205,3 +205,40 @@ for next time:
 
 - more blockchain traversal steps
 
+
+2025-08-30:
+
+    - No more warnings!
+    - Update tests to use the test-suite text vectors and remove the
+      duplicate files from the fixtures directory.
+    - Reverted some changes to service/beacon to support the test vectors.
+    - Discovered a spec bug where deterministic key-based DID document
+      generation is missing a step to add the "controller" key.
+    - Resurrects BIP340 cryptosuite code (not sure if it's usable yet).
+    - Resurrects ZCAP code (also not sure).
+    - Still need to clean up error handling in BIP340 and ZCAP.
+    - Module organization could use a lot of work.
+    - The new test fixture for transactions used by
+      `test_document_from_did_components()` is sort of a placeholder. I
+      copied a beacon signal transaction from the other file and updated the
+      signal bytes. It will be better to use a signet RPC server to lookup
+      transactions for the signal addresses. I just haven't yet.
+    - Added test ignore messages, so we can see why they are ignored.
+    - Fixed the `test_invalid_genesis_length()` ... it was super easy. Just
+      used `bech32_rust::encode()` to create a bad "k1" public key.
+
+
+2025-08-31
+
+- Parsed `Proof` into `Update`.
+- Made `Proof` fields required.
+- Cleaned up error::Error (it's almost unused, now!)
+- Removed invocation.rs (was incomplete and not really useful)
+
+for next time:
+
+- Need to fix ProofOptions
+- Convert Cryptosuites trait to an enum
+- continue with 7.2.2.5 Apply DID Update, step 2
+
+

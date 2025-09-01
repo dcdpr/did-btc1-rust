@@ -1,3 +1,4 @@
+use crate::zcap::proof::Proof;
 use crate::{canonical_hash::CanonicalHash, error::Btc1Error, identifier::Sha256Hash, json_tools};
 use onlyerror::Error;
 use serde_json::Value;
@@ -27,6 +28,7 @@ pub struct Update {
     pub(crate) source_hash: Sha256Hash,
     pub(crate) _target_hash: Sha256Hash,
     pub(crate) target_version_id: NonZeroU64,
+    pub(crate) proof: Proof,
 
     pub(crate) json: Value,
 }
@@ -53,11 +55,14 @@ impl Update {
             .map_err(|_| Error::InvalidTargetVersionId)?
             .try_into()
             .map_err(|_| Error::InvalidTargetVersionId)?;
+        // TODO: Check whether "proof" exists as a key.
+        let proof = serde_json::from_value(json["proof"].clone())?;
 
         Ok(Self {
             source_hash,
             _target_hash,
             target_version_id,
+            proof,
             json,
         })
     }

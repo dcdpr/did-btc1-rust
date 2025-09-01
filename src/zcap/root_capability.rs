@@ -4,7 +4,7 @@
 //! specification for deriving and dereferencing root capabilities.
 
 use super::ZCAP_CONTEXT;
-use crate::error::{Error, Result};
+use crate::error::Error;
 use serde::{Deserialize, Serialize};
 
 /// A ZCAP-LD root capability object
@@ -40,7 +40,7 @@ impl RootCapability {
     }
 
     /// Validate that this root capability is well-formed
-    pub(crate) fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         // Check context
         if self.context != ZCAP_CONTEXT {
             return Err(Error::Zcap(format!(
@@ -85,7 +85,7 @@ impl RootCapability {
 ///
 /// * `Ok(RootCapability)` - The derived root capability
 /// * `Err(Error)` - If the DID identifier is invalid
-pub(crate) fn derive_root_capability(did_identifier: &str) -> Result<RootCapability> {
+pub(crate) fn derive_root_capability(did_identifier: &str) -> Result<RootCapability, Error> {
     // Validate DID identifier format
     if !did_identifier.starts_with("did:btc1:") {
         return Err(Error::Zcap(format!(
@@ -121,7 +121,7 @@ pub(crate) fn derive_root_capability(did_identifier: &str) -> Result<RootCapabil
 ///
 /// * `Ok(RootCapability)` - The dereferenced root capability
 /// * `Err(Error)` - If the capability ID is invalid
-pub(crate) fn dereference_root_capability(capability_id: &str) -> Result<RootCapability> {
+pub(crate) fn dereference_root_capability(capability_id: &str) -> Result<RootCapability, Error> {
     // Step 2-3: Split and validate components (handled by validation function)
     super::validation::validate_capability_id(capability_id)?;
 

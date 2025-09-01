@@ -1,8 +1,7 @@
-use super::CryptoSuite;
 use super::transformation::{JcsTransformation, Transformation};
 use super::utils::{bip340_sign, bip340_verify, hash_sha256, multibase_decode, multibase_encode};
+use super::{CryptoSuite, Error};
 use crate::document::Document;
-use crate::error::Error;
 use crate::key::PublicKey;
 use crate::zcap::proof::{Proof, ProofOptions, ProofType, VerificationResult};
 use secp256k1::constants::{
@@ -37,9 +36,8 @@ impl CryptoSuite for Bip340JcsSuite {
 
     fn create_proof(&self, document: &Document, options: &ProofOptions) -> Result<Document, Error> {
         // TODO: need strong types in here too
-
-        // Clone proof options
-        let mut proof_options = options.options.clone();
+        // TODO: Need to fix ProofOptions
+        let mut proof_options = std::collections::HashMap::new();
 
         // Ensure required fields are present
         if !proof_options.contains_key("type") {
@@ -95,10 +93,10 @@ impl CryptoSuite for Bip340JcsSuite {
         })?;
 
         // Check proof type and cryptosuite
-        if proof.type_ != ProofType::DataIntegrityProof {
+        if proof.proof_type != ProofType::DataIntegrityProof {
             return Err(super::Error::ProofVerification(format!(
                 "Unsupported proof type: {:?}",
-                proof.type_
+                proof.proof_type
             )))?;
         }
 
@@ -112,23 +110,24 @@ impl CryptoSuite for Bip340JcsSuite {
         // Remove proof from document
         let unsecured_document = document.without_proof();
 
-        // Create proof options
-        let mut proof_options = ProofOptions::new();
-        for (key, value) in document
-            .get_proof()
-            .unwrap()
-            .context
-            .iter()
-            .flat_map(|c| match c {
-                Value::Object(map) => map
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect::<Vec<_>>(),
-                _ => vec![],
-            })
-        {
-            proof_options.options.insert(key, value);
-        }
+        // TODO: Create proof options
+        // let mut proof_options = ProofOptions::new();
+        // for (key, value) in document
+        //     .get_proof()
+        //     .unwrap()
+        //     .context
+        //     .iter()
+        //     .flat_map(|c| match c {
+        //         Value::Object(map) => map
+        //             .iter()
+        //             .map(|(k, v)| (k.clone(), v.clone()))
+        //             .collect::<Vec<_>>(),
+        //         _ => vec![],
+        //     })
+        // {
+        //     proof_options.options.insert(key, value);
+        // }
+        let proof_options = ProofOptions {};
 
         // Decode proof value
         let proof_bytes = multibase_decode(&proof.proof_value)?;
@@ -156,7 +155,7 @@ impl CryptoSuite for Bip340JcsSuite {
     }
 
     fn transform(&self, document: &Document, options: &ProofOptions) -> Result<Vec<u8>, Error> {
-        Ok(self.transformation.transform(document, options)?)
+        self.transformation.transform(document, options)
     }
 
     fn hash(&self, transformed_data: &[u8], proof_config: &[u8]) -> Result<Vec<u8>, Error> {
@@ -173,10 +172,10 @@ impl CryptoSuite for Bip340JcsSuite {
     fn configure_proof(
         &self,
         _document: &Document,
-        options: &ProofOptions,
+        _options: &ProofOptions,
     ) -> Result<Vec<u8>, Error> {
-        // Clone proof options
-        let proof_config = options.options.clone();
+        // TODO: Need to fix ProofOptions
+        let proof_config = std::collections::HashMap::new();
 
         // Validate required fields
         if let Some(Value::String(type_)) = proof_config.get("type") {
@@ -228,17 +227,8 @@ impl CryptoSuite for Bip340JcsSuite {
         Ok(canonical_config)
     }
 
-    fn serialize_proof(&self, hash_data: &[u8], options: &ProofOptions) -> Result<Vec<u8>, Error> {
-        // Get verification method
-        let _verification_method = options
-            .options
-            .get("verificationMethod")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                super::Error::ProofGeneration(
-                    "Missing verificationMethod in proof options".to_string(),
-                )
-            })?;
+    fn serialize_proof(&self, hash_data: &[u8], _options: &ProofOptions) -> Result<Vec<u8>, Error> {
+        // TODO: Check options.verificationMethod
 
         // In a real implementation, retrieve the private key associated with
         // the "verificationMethod"
@@ -304,10 +294,6 @@ impl CryptoSuite for Bip340JcsSuite {
         let public_key = PublicKey::from_slice(&public_key_bytes)?;
 
         // Verify signature
-        Ok(bip340_verify(
-            &hash_array,
-            &signature,
-            &public_key.x_only_public_key().0,
-        )?)
+        bip340_verify(&hash_array, &signature, &public_key.x_only_public_key().0)
     }
 }

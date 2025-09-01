@@ -67,11 +67,10 @@
 // TODO: This module needs a lot of work!
 #![allow(dead_code)]
 
-pub(crate) mod invocation;
 pub(crate) mod proof;
 pub(crate) mod root_capability;
 
-use crate::error::Result;
+use crate::error::Error;
 use serde::{Deserialize, Serialize};
 
 /// ZCAP-LD context URL
@@ -82,10 +81,6 @@ pub(crate) const ZCAP_CONTEXT: &str = "https://w3id.org/zcap/v1";
 pub(crate) enum CapabilityAction {
     /// Write action - allows updating DID documents
     Write,
-    /// Read action - allows reading DID documents
-    Read,
-    /// Custom action with string value
-    Custom(String),
 }
 
 impl CapabilityAction {
@@ -93,18 +88,17 @@ impl CapabilityAction {
     pub(crate) fn as_str(&self) -> &str {
         match self {
             CapabilityAction::Write => "Write",
-            CapabilityAction::Read => "Read",
-            CapabilityAction::Custom(s) => s,
         }
     }
 }
 
-impl From<&str> for CapabilityAction {
-    fn from(s: &str) -> Self {
+impl TryFrom<&str> for CapabilityAction {
+    type Error = Error;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
         match s {
-            "Write" => CapabilityAction::Write,
-            "Read" => CapabilityAction::Read,
-            _ => CapabilityAction::Custom(s.to_string()),
+            "Write" => Ok(CapabilityAction::Write),
+            _ => return Err(Error::Zcap("Invalid capability action".to_string()))
         }
     }
 }
@@ -115,7 +109,7 @@ pub(crate) mod validation {
 
     /// Validate that a capability ID follows the expected format
     /// Format: urn:zcap:root:{url_encoded_did}
-    pub(crate) fn validate_capability_id(capability_id: &str) -> Result<()> {
+    pub(crate) fn validate_capability_id(capability_id: &str) -> Result<(), Error> {
         let components: Vec<&str> = capability_id.split(':').collect();
 
         if components.len() != 4 {
@@ -141,7 +135,7 @@ pub(crate) mod validation {
     }
 
     /// Extract the DID identifier from a capability ID
-    pub(crate) fn extract_did_from_capability_id(capability_id: &str) -> Result<String> {
+    pub(crate) fn extract_did_from_capability_id(capability_id: &str) -> Result<String, Error> {
         validate_capability_id(capability_id)?;
 
         let components: Vec<&str> = capability_id.split(':').collect();
@@ -164,18 +158,8 @@ mod tests {
     #[test]
     fn test_capability_action_conversion() {
         assert_eq!(CapabilityAction::Write.as_str(), "Write");
-        assert_eq!(CapabilityAction::Read.as_str(), "Read");
-        assert_eq!(
-            CapabilityAction::Custom("Delete".to_string()).as_str(),
-            "Delete"
-        );
 
-        assert_eq!(CapabilityAction::from("Write"), CapabilityAction::Write);
-        assert_eq!(CapabilityAction::from("Read"), CapabilityAction::Read);
-        assert_eq!(
-            CapabilityAction::from("Custom"),
-            CapabilityAction::Custom("Custom".to_string())
-        );
+        assert_eq!(CapabilityAction::try_from("Write").unwrap(), CapabilityAction::Write);
     }
 
     #[test]
