@@ -1,10 +1,12 @@
 use crate::beacon::{AddressExt as _, Beacon};
 use crate::canonical_hash::CanonicalHash;
+use crate::cryptosuite::CryptoSuite;
 use crate::error::{Btc1Error, ProblemDetails};
 use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, Sha256Hash};
 use crate::key::{PublicKey, PublicKeyExt as _};
 use crate::update::{DocumentPatch, Update};
 use crate::verification::{VerificationMethod, VerificationMethodId};
+use crate::zcap::root_capability::dereference_root_capability;
 use crate::{blockchain::Traversal, identifier::TryNetworkExt, json_tools, zcap::proof::Proof};
 use chrono::{DateTime, Utc};
 use esploda::bitcoin::{Address, Txid};
@@ -66,7 +68,7 @@ pub(crate) struct DocumentFields<T> {
     pub(crate) id: T,
 
     /// Document context
-    context: Vec<String>,
+    pub(crate) context: Vec<String>,
 
     /// Document controller
     controller: Vec<T>,
@@ -484,7 +486,24 @@ impl InitialDocument {
 
     // Spec Section 7.2.2.5
     pub(crate) fn apply_update(&mut self, update: &Update) -> Result<(), Btc1Error> {
-        let _capability_id = &update.proof.capability;
+        let capability_id = &update.proof.capability;
+        let did = dereference_root_capability(capability_id)?;
+
+        if self.fields.id != did {
+            return Err(Btc1Error::InvalidDidUpdate(
+                "Proof root capability is not for this DID document".into(),
+            ));
+        }
+
+        // TODO: Replace JCS asap
+        let crypto_suite = CryptoSuite::Jsc;
+
+        // TODO: This is defined by https://www.w3.org/TR/vc-data-integrity/#verify-proof
+        let _verification_result = crypto_suite.data_integrity_verify_proof(
+            "application/ld+json",
+            &update.proof,
+            "capabilityInvocation",
+        )?;
 
         todo!()
     }

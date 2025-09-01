@@ -1,8 +1,6 @@
 // TODO: This module is incomplete
 #![allow(dead_code)]
 
-use crate::document::Document;
-use crate::zcap::proof::{Proof, ProofOptions, VerificationResult};
 use onlyerror::Error;
 
 /// BIP340 JCS cryptosuite implementation
@@ -58,33 +56,7 @@ pub enum Error {
     Multibase(#[from] multibase::Error),
 }
 
-/// Trait defining the main interface for cryptographic suites
-pub(crate) trait CryptoSuite {
-    /// Name of the cryptographic suite
-    fn name(&self) -> &'static str;
-
-    /// Create a proof for a document with given options
-    fn create_proof(&self, document: &Document, options: &ProofOptions) -> Result<Document, Error>;
-
-    /// Verify a document with a proof
-    fn verify_proof(&self, document: &Document) -> Result<VerificationResult, Error>;
-
-    /// Transform a document for hashing
-    fn transform(&self, document: &Document, options: &ProofOptions) -> Result<Vec<u8>, Error>;
-
-    /// Hash transformed data
-    fn hash(&self, transformed_data: &[u8], proof_config: &[u8]) -> Result<Vec<u8>, Error>;
-
-    /// Configure a proof from options
-    fn configure_proof(
-        &self,
-        document: &Document,
-        options: &ProofOptions,
-    ) -> Result<Vec<u8>, Error>;
-
-    /// Serialize a proof
-    fn serialize_proof(&self, hash_data: &[u8], options: &ProofOptions) -> Result<Vec<u8>, Error>;
-
-    /// Verify a proof
-    fn verify(&self, hash_data: &[u8], proof_bytes: &[u8], options: &Proof) -> Result<bool, Error>;
+pub(crate) enum CryptoSuite {
+    Jsc, // TODO: Remove JSC asap
+    Rdfc,
 }

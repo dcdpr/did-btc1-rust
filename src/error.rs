@@ -35,6 +35,12 @@ pub enum Btc1Error {
 
     /// Invalid Update Proof
     InvalidUpdateProof(String),
+
+    /// ZCAP (Authorization Capabilities) related errors
+    Zcap(String),
+
+    /// Problems when creating or applying a DID Update
+    InvalidDidUpdate(String),
 }
 
 impl Btc1Error {
@@ -55,7 +61,9 @@ impl ProblemDetails for Btc1Error {
             // From: https://github.com/dcdpr/did-btc1/issues/71#issuecomment-3179550385
             Self::InvalidSidecarData(_)
             | Self::LatePublishingError(_)
-            | Self::InvalidUpdateProof(_) => "https://btc1.dev/context/v1",
+            | Self::InvalidUpdateProof(_)
+            | Self::Zcap(_)
+            | Self::InvalidDidUpdate(_) => "https://btc1.dev/context/v1",
         };
 
         let name = match self {
@@ -64,6 +72,8 @@ impl ProblemDetails for Btc1Error {
             Self::InvalidSidecarData(_) => "INVALID_SIDECAR_DATA",
             Self::LatePublishingError(_) => "LATE_PUBLISHING_ERROR",
             Self::InvalidUpdateProof(_) => "INVALID_UPDATE_PROOF",
+            Self::Zcap(_) => "ZCAP",
+            Self::InvalidDidUpdate(_) => "INVALID_DID_UPDATE",
         };
 
         Some(json!({
@@ -75,6 +85,8 @@ impl ProblemDetails for Btc1Error {
                 Self::InvalidSidecarData(detail) => detail,
                 Self::LatePublishingError(detail) => detail,
                 Self::InvalidUpdateProof(detail) => detail,
+                Self::Zcap(detail) => detail,
+                Self::InvalidDidUpdate(detail) => detail,
             },
         }))
     }

@@ -6,6 +6,7 @@ use crate::document::Document;
 use crate::zcap::proof::ProofOptions;
 use serde_json::Value;
 
+// TODO: Make this an enum
 /// Trait for document transformation algorithms
 pub(crate) trait Transformation {
     /// Transform a document for cryptographic operations
