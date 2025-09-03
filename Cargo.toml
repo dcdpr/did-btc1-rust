@@ -2,10 +2,12 @@
 name = "did-btc1"
 version = "0.1.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "MPL-2.0"
 description = "Implementation of DID:BTC1"
-repository = "git@gl1.dcdpr.com:dcd/did-btc1-rust.git"
+repository = "https://github.com/dcdpr/did-btc1.git"
 authors = ["Dan Pape <dpape@dpape.com>", "Jay Oster <jay@blipjoy.com>"]
+keywords = ["did", "did-btc1", "decentralized"]
+readme = "README.md"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
