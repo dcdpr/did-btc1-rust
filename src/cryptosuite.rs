@@ -6,7 +6,7 @@ use crate::update::{UnsecuredUpdate, Update};
 use crate::zcap::proof::{Proof, ProofInner, ProofPurpose, ProofValue};
 use crate::{error::Btc1Error, identifier::Sha256Hash, key::PublicKey};
 use multibase::{Base, decode, encode};
-use secp256k1::constants::{MESSAGE_SIZE, SCHNORR_SIGNATURE_SIZE, SECRET_KEY_SIZE};
+use secp256k1::constants::{MESSAGE_SIZE, SECRET_KEY_SIZE};
 use secp256k1::schnorr::Signature;
 use secp256k1::{KeyPair, Message, Secp256k1, SecretKey, XOnlyPublicKey};
 use serde_json::Value;
@@ -49,7 +49,7 @@ impl CryptoSuite {
         let proof_bytes = self.serialize_proof(hash_data, &inner)?;
 
         // Encode proof value with Multibase
-        let proof_value = multibase_encode(&proof_bytes);
+        let proof_value = multibase_encode(proof_bytes);
 
         // Create final proof
         let proof = Proof::from_inner(inner, proof_value);
@@ -115,7 +115,7 @@ impl CryptoSuite {
         let hash_data = self.hash(&transformed_data, &proof_config);
 
         // Verify proof
-        let verified = self.proof_verify(hash_data, &proof_bytes, public_key);
+        let verified = self.proof_verify(hash_data, proof_bytes, public_key);
 
         Ok(verified.then_some(unsecured_update))
     }
@@ -152,8 +152,7 @@ impl CryptoSuite {
         &self,
         hash_data: Sha256Hash,
         proof: &ProofInner,
-        // TODO: Make a newtype for Schnorr signatures
-    ) -> Result<[u8; SCHNORR_SIGNATURE_SIZE], Btc1Error> {
+    ) -> Result<Signature, Btc1Error> {
         // Get verification method
         let _verification_method_id = &proof.verification_method;
 
@@ -172,8 +171,7 @@ impl CryptoSuite {
     fn proof_verify(
         &self,
         hash_data: Sha256Hash,
-        // TODO: Make a newtype for Schnorr signatures
-        proof_bytes: &[u8; SCHNORR_SIGNATURE_SIZE],
+        proof_bytes: Signature,
         public_key: PublicKey,
     ) -> bool {
         // Verify signature
@@ -185,8 +183,7 @@ impl CryptoSuite {
 fn bip340_sign(
     message_hash: [u8; MESSAGE_SIZE],
     private_key_bytes: [u8; SECRET_KEY_SIZE],
-    // TODO: Make a newtype for Schnorr signatures
-) -> Result<[u8; SCHNORR_SIGNATURE_SIZE], Btc1Error> {
+) -> Result<Signature, Btc1Error> {
     let secp = Secp256k1::new();
     let secret_key = SecretKey::from_slice(&private_key_bytes).unwrap();
 
@@ -195,18 +192,14 @@ fn bip340_sign(
 
     // Sign with BIP340 Schnorr
     let keypair = KeyPair::from_secret_key(&secp, &secret_key);
-    let signature = secp.sign_schnorr_no_aux_rand(&message, &keypair);
 
-    let mut signature_bytes = [0; SCHNORR_SIGNATURE_SIZE];
-    signature_bytes.copy_from_slice(signature.as_ref());
-
-    Ok(signature_bytes)
+    Ok(secp.sign_schnorr_no_aux_rand(&message, &keypair))
 }
 
 /// Verify a BIP340 Schnorr signature
 fn bip340_verify(
     message_hash: Sha256Hash,
-    signature: &[u8; SCHNORR_SIGNATURE_SIZE],
+    signature: Signature,
     public_key: &XOnlyPublicKey,
 ) -> bool {
     let secp = Secp256k1::new();
@@ -214,29 +207,22 @@ fn bip340_verify(
     // Create message object from hash
     let message = Message::from_slice(&message_hash.0).unwrap();
 
-    // Create signature object
-    let sig = Signature::from_slice(signature).unwrap();
-
     // Verify signature
-    secp.verify_schnorr(&sig, &message, public_key).is_ok()
+    secp.verify_schnorr(&signature, &message, public_key)
+        .is_ok()
 }
 
 /// Encode binary data using Multibase (base58-btc)
-fn multibase_encode(data: &[u8]) -> ProofValue {
-    ProofValue(encode(Base::Base58Btc, data))
+fn multibase_encode(signature: Signature) -> ProofValue {
+    ProofValue(encode(Base::Base58Btc, signature.as_ref()))
 }
 
 /// Decode multibase encoded string
-fn multibase_decode(data: &ProofValue) -> Result<[u8; SCHNORR_SIGNATURE_SIZE], Btc1Error> {
-    let decoded = decode(&data.0)
+fn multibase_decode(proof_value: &ProofValue) -> Result<Signature, Btc1Error> {
+    let decoded = decode(&proof_value.0)
         .map(|(_, decoded)| decoded)
         .map_err(|_| Btc1Error::ProofVerification("Invalid proofValue encoding".into()))?;
 
-    if decoded.len() != SCHNORR_SIGNATURE_SIZE {
-        return Err(Btc1Error::ProofVerification(
-            "Invalid proofValue encoding".into(),
-        ));
-    }
-
-    Ok(decoded.try_into().unwrap())
+    Signature::from_slice(&decoded)
+        .map_err(|_| Btc1Error::ProofVerification("Invalid proofValue encoding".into()))
 }
