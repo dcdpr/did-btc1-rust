@@ -6,14 +6,14 @@ use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, Sha256H
 use crate::key::{PublicKey, PublicKeyExt as _};
 use crate::update::{DocumentPatch, Update};
 use crate::verification::{VerificationMethod, VerificationMethodId};
+use crate::zcap::proof::{Proof, ProofPurpose};
 use crate::zcap::root_capability::dereference_root_capability;
-use crate::{blockchain::Traversal, identifier::TryNetworkExt, json_tools, zcap::proof::Proof};
+use crate::{blockchain::Traversal, identifier::TryNetworkExt, json_tools};
 use chrono::{DateTime, Utc};
 use esploda::bitcoin::{Address, Txid};
 use onlyerror::Error;
 use serde_json::{Map, Value, json};
 use std::{collections::HashMap, fs, num::NonZeroU64, path::Path, str::FromStr};
-use crate::zcap::proof::ProofPurpose;
 
 const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
 // TODO: Needs to be updated (eventually) to "https://btc1.dev/context/v1"
@@ -509,16 +509,11 @@ impl InitialDocument {
                 ))
             })?;
 
-        let verification_result = crypto_suite.data_integrity_verify_proof(
+        crypto_suite.data_integrity_verify_proof(
             public_key,
             update,
             &ProofPurpose::CapabilityInvocation,
         )?;
-
-        if verification_result.is_none() {
-            // todo: we are supposedly to return list of warning and error ProblemDetails?
-            return Err(Btc1Error::InvalidUpdateProof("Verification failed".into()))
-        }
 
         // YOU ARE HERE
         // step 11... Use json-patch crate to apply the update.patch to self

@@ -66,7 +66,7 @@ impl Update {
             json,
         })
     }
-    
+
     // Spec section 7.2.2.4
     pub(crate) fn confirm_duplicate(&self, hash_history: &[Sha256Hash]) -> Result<(), Btc1Error> {
         let update_hash = UnsecuredUpdate::from(self).hash();
