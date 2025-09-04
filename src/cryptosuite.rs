@@ -20,7 +20,7 @@ pub(crate) enum CryptoSuite {
 
 impl CryptoSuite {
     // bip340 cryptosuite spec Section 3.3.1
-    pub(crate) fn create_proof(
+    fn create_proof(
         &self,
         unsecured_update: &UnsecuredUpdate,
         mut inner: ProofInner,
@@ -75,11 +75,7 @@ impl CryptoSuite {
     }
 
     // bip340 cryptosuite spec Section 3.3.2
-    pub(crate) fn verify_proof(
-        &self,
-        public_key: PublicKey,
-        update: &Update,
-    ) -> Result<(), Btc1Error> {
+    fn verify_proof(&self, public_key: PublicKey, update: &Update) -> Result<(), Btc1Error> {
         // Remove proof from update document
         let unsecured_update = UnsecuredUpdate::from(update);
 
