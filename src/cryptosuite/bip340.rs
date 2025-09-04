@@ -1,7 +1,6 @@
 #![allow(dead_code)] // todo
 
 use super::CryptoSuite;
-use super::transformation::{JcsTransformation, RdfcTransformation, Transformation as _};
 use super::utils::{bip340_sign, bip340_verify, multibase_decode, multibase_encode};
 use crate::identifier::Sha256Hash;
 use crate::update::{UnsecuredUpdate, Update};
@@ -19,7 +18,7 @@ impl CryptoSuite {
         mut inner: ProofInner,
     ) -> Result<Proof, Btc1Error> {
         // Add document context to proof if present
-        let context = &unsecured_update.as_ref()["@context"].as_array();
+        let context = unsecured_update.as_ref()["@context"].as_array();
         if let Some(context) = context {
             inner.context = context
                 .iter()
@@ -32,7 +31,7 @@ impl CryptoSuite {
         let proof_config = self.configure_proof(&serde_json::to_value(&inner).unwrap());
 
         // Transform document
-        let transformed_data = self.transform(unsecured_update)?;
+        let transformed_data = self.transform(unsecured_update);
 
         // Hash the data
         let hash_data = self.hash(&transformed_data, &proof_config);
@@ -77,36 +76,34 @@ impl CryptoSuite {
         // Get proof from document
         let proof = &update.proof;
 
-        // Remove proof from document
-        let unsecured_document = UnsecuredUpdate::from(update);
+        // Remove proof from update document
+        let unsecured_update = UnsecuredUpdate::from(update);
 
         // Decode proof value
         let proof_bytes = multibase_decode(&proof.proof_value)?;
 
-        let inner_context_size = proof.inner.context.len();
-        let context = &update.as_ref()["@context"].as_array();
+        // Compare @context
+        let context = update.as_ref()["@context"].as_array();
         if let Some(context) = context {
-            let contexts_are_equal = context
-                .iter()
-                .take(inner_context_size)
-                .zip(proof.inner.context.iter())
-                .all(|(update_context_entry, proof_context_entry)| {
-                    if let Some(update_context_entry) = update_context_entry.as_str() {
-                        update_context_entry == proof_context_entry
-                    } else {
-                        false
-                    }
-                });
+            let contexts_are_equal = context.iter().zip(proof.inner.context.iter()).all(
+                |(update_context_entry, proof_context_entry)| {
+                    update_context_entry
+                        .as_str()
+                        .map(|update_context_entry| update_context_entry == proof_context_entry)
+                        .unwrap_or_default()
+                },
+            );
             if !contexts_are_equal {
                 return Ok(None);
             }
         }
 
         // Transform document
-        let transformed_data = self.transform(&unsecured_document)?;
+        let transformed_data = self.transform(&unsecured_update);
 
         // Configure proof
-        let proof_config = self.configure_proof(unsecured_document.as_ref());
+        let proof_options = serde_json::to_value(&update.proof.inner).unwrap();
+        let proof_config = self.configure_proof(&proof_options);
 
         // Hash data
         let hash_data = self.hash(&transformed_data, &proof_config);
@@ -114,23 +111,24 @@ impl CryptoSuite {
         // Verify proof
         let verified = self.proof_verify(hash_data, &proof_bytes, public_key);
 
-        Ok(verified.then_some(unsecured_document))
+        Ok(verified.then_some(unsecured_update))
     }
 
     // bip340 cryptosuite spec Section 3.3.3
-    fn transform(&self, unsecured_update: &UnsecuredUpdate) -> Result<String, Btc1Error> {
+    fn transform(&self, unsecured_update: &UnsecuredUpdate) -> String {
         match self {
-            Self::Jcs => JcsTransformation::new().transform(unsecured_update),
-            Self::Rdfc => RdfcTransformation::new().transform(unsecured_update),
+            Self::Jcs => serde_jcs::to_string(unsecured_update.as_ref()).unwrap(),
+            Self::Rdfc => todo!(),
         }
     }
 
     // bip340 cryptosuite spec Section 3.3.4
     fn hash(&self, transformed_data: &str, proof_config: &str) -> Sha256Hash {
         let mut hasher = Sha256::new();
-        // Concatenate proof config and transformed data
-        hasher.update(proof_config);
-        hasher.update(transformed_data);
+
+        // Hash and concatenate proof config and transformed data
+        hasher.update(Sha256::digest(proof_config));
+        hasher.update(Sha256::digest(transformed_data));
 
         Sha256Hash(hasher.finalize().into())
     }
@@ -163,7 +161,7 @@ impl CryptoSuite {
         // For this stub, we'll just generate a dummy signature
 
         // TODO: Implement actual key retrieval
-        let private_key_bytes = [0u8; SECRET_KEY_SIZE]; // todo: need to get a real key (using `versification_method`)
+        let private_key_bytes = [0u8; SECRET_KEY_SIZE]; // todo: need to get a real key (using `verification_method`)
 
         // Sign hash with BIP340
         bip340_sign(hash_data.0, private_key_bytes)

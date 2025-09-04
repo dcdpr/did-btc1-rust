@@ -46,7 +46,6 @@ impl fmt::Display for ProofPurpose {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ProofValue(pub(crate) String);
 
@@ -122,6 +121,7 @@ pub struct ProofInner {
     // https://w3c-ccg.github.io/zcap-spec/#delegated-capability
     //
     /// ZCAP: Target of the capability invocation
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub invocation_target: Option<String>,
 }
 
