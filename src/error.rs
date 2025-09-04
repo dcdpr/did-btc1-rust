@@ -20,6 +20,7 @@ pub trait ProblemDetails {
 #[derive(Error, Debug)]
 pub enum Btc1Error {
     // Errors from DID Resolution Spec
+    //
     /// An invalid DID was detected during DID Resolution.
     InvalidDid(String),
 
@@ -27,6 +28,7 @@ pub enum Btc1Error {
     InvalidDidDocument(String),
 
     // Errors from DID BTC1 Spec
+    //
     /// Sidecar data was invalid
     InvalidSidecarData(String),
 
@@ -41,6 +43,17 @@ pub enum Btc1Error {
 
     /// Problems when creating or applying a DID Update
     InvalidDidUpdate(String),
+
+    // Errors from Verifiable Credentials Data Integrity Spec
+    //
+    /// Proof verification error
+    ProofVerification(String),
+
+    /// Proof transformation error
+    ProofTransformation(String),
+
+    /// Proof generation error
+    ProofGeneration(String),
 }
 
 impl Btc1Error {
@@ -63,7 +76,10 @@ impl ProblemDetails for Btc1Error {
             | Self::LatePublishingError(_)
             | Self::InvalidUpdateProof(_)
             | Self::Zcap(_)
-            | Self::InvalidDidUpdate(_) => "https://btc1.dev/context/v1",
+            | Self::InvalidDidUpdate(_)
+            | Self::ProofVerification(_)
+            | Self::ProofTransformation(_)
+            | Self::ProofGeneration(_) => "https://btc1.dev/context/v1",
         };
 
         let name = match self {
@@ -74,6 +90,9 @@ impl ProblemDetails for Btc1Error {
             Self::InvalidUpdateProof(_) => "INVALID_UPDATE_PROOF",
             Self::Zcap(_) => "ZCAP",
             Self::InvalidDidUpdate(_) => "INVALID_DID_UPDATE",
+            Self::ProofVerification(_) => "PROOF_VERIFICATION_ERROR",
+            Self::ProofTransformation(_) => "PROOF_TRANSFORMATION_ERROR",
+            Self::ProofGeneration(_) => "PROOF_GENERATION_ERROR",
         };
 
         Some(json!({
@@ -87,6 +106,9 @@ impl ProblemDetails for Btc1Error {
                 Self::InvalidUpdateProof(detail) => detail,
                 Self::Zcap(detail) => detail,
                 Self::InvalidDidUpdate(detail) => detail,
+                Self::ProofVerification(detail) => detail,
+                Self::ProofTransformation(detail) => detail,
+                Self::ProofGeneration(detail) => detail,
             },
         }))
     }

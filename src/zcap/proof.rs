@@ -1,23 +1,19 @@
-use crate::document::Document;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
 
 /// Types of proofs supported by the library
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ProofType {
     /// General Data Integrity Proof
+    #[default]
     DataIntegrityProof,
-    /// Other types
-    #[serde(other)]
-    Other,
 }
 
-impl Default for ProofType {
-    fn default() -> Self {
-        Self::DataIntegrityProof
+impl fmt::Display for ProofType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DataIntegrityProof")
     }
 }
 
@@ -38,86 +34,110 @@ pub(crate) enum ProofPurpose {
     Other(String),
 }
 
+impl fmt::Display for ProofPurpose {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProofPurpose::Authentication => f.write_str("authentication"),
+            ProofPurpose::AssertionMethod => f.write_str("assertionMethod"),
+            ProofPurpose::CapabilityInvocation => f.write_str("capabilityInvocation"),
+            ProofPurpose::CapabilityDelegation => f.write_str("capabilityDelegation"),
+            ProofPurpose::Other(s) => f.write_str(s),
+        }
+    }
+}
 
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ProofValue(pub(crate) String);
 
 /// Represents a cryptographic proof
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Proof {
+    #[serde(flatten)]
+    pub(crate) inner: ProofInner,
+
+    /// Proof value (encoded binary data)
+    pub(crate) proof_value: ProofValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProofInner {
     /// Optional identifier for the proof
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) id: Option<String>,
+    pub id: Option<String>,
 
     /// Type of proof
     #[serde(rename = "type")]
-    pub(crate) proof_type: ProofType,
+    pub proof_type: ProofType,
 
     /// Purpose of the proof
-    pub(crate) proof_purpose: String,
+    pub proof_purpose: ProofPurpose,
 
     /// Verification method that can be used to verify the proof
-    pub(crate) verification_method: String,
+    pub verification_method: String,
 
     /// Cryptographic suite used for the proof
-    pub(crate) cryptosuite: String,
+    pub cryptosuite: CryptoSuiteName,
 
     /// When the proof was created (ISO8601 dateTime)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) created: Option<DateTime<Utc>>,
+    pub created: Option<DateTime<Utc>>,
 
     /// When the proof expires (ISO8601 dateTime)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) expires: Option<DateTime<Utc>>,
+    pub expires: Option<DateTime<Utc>>,
 
     /// Security domain for the proof
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) domain: Option<String>,
+    pub domain: Option<String>,
 
     /// Challenge to prevent replay attacks
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) challenge: Option<String>,
-
-    /// Proof value (encoded binary data)
-    pub(crate) proof_value: String,
+    pub challenge: Option<String>,
 
     /// Previous proof ID or array of IDs
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) previous_proof: Option<Value>,
+    pub previous_proof: Option<Value>,
 
     /// Random value to increase privacy
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) nonce: Option<String>,
+    pub nonce: Option<String>,
 
     /// Optional JSON-LD context
-    pub(crate) context: Vec<String>,
+    #[serde(rename = "@context")]
+    pub context: Vec<String>,
 
     /// ZCAP: Capability being invoked (for capabilityInvocation proof purpose)
-    pub(crate) capability: String,
+    pub capability: String,
 
     /// ZCAP: Action being performed with the capability
-    pub(crate) capability_action: String,
+    pub capability_action: String,
 
+    // TODO: What is this? Our spec looks wrong...?
+    // See example in https://dcdpr.github.io/did-btc1/#dereference-root-capability-identifier
+    // `invocationTarget` is used in an ephemeral object (never serialized) named "root capability",
+    // but also appears in ZCAP delegated capability OUTSIDE of `proof`:
+    // https://w3c-ccg.github.io/zcap-spec/#delegated-capability
+    //
     /// ZCAP: Target of the capability invocation
-    pub(crate) invocation_target: String,
+    pub invocation_target: Option<String>,
 }
 
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) enum SuiteType {
-    #[default]
-    DataIntegrityProof,
-}
-
-impl fmt::Display for SuiteType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("DataIntegrityProof")
+impl Proof {
+    pub(crate) fn from_inner(inner: ProofInner, proof_value: ProofValue) -> Self {
+        Self { inner, proof_value }
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) enum CryptoSuiteName {
     #[default]
+    #[serde(rename = "bip340-jcs-2025")]
     Jcs, // todo: remove JCS asap
+
+    #[serde(rename = "bip340-rdfc-2025")]
     Rdfc,
 }
 
@@ -128,86 +148,4 @@ impl fmt::Display for CryptoSuiteName {
             Self::Rdfc => f.write_str("bip340-rdfc-2025"),
         }
     }
-}
-
-/// Options for creating a proof
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ProofOptions {
-    pub(crate) context: Vec<String>,
-    pub(crate) suite_type: SuiteType,
-    pub(crate) cryptosuite: CryptoSuiteName,
-    pub(crate) verification_method: String,
-    pub(crate) created: Option<DateTime<Utc>>,
-}
-
-impl ProofOptions {
-    /// Set the proof type (default is "DataIntegrityProof")
-    pub(crate) fn with_type(self, _proof_type: &str) -> Self {
-        todo!()
-    }
-
-    /// Set the cryptosuite
-    pub(crate) fn with_cryptosuite(self, _cryptosuite: &str) -> Self {
-        todo!()
-    }
-
-    /// Set the verification method
-    pub(crate) fn with_verification_method(self, _method: &str) -> Self {
-        todo!()
-    }
-
-    /// Set the proof purpose
-    pub(crate) fn with_proof_purpose(self, _purpose: &str) -> Self {
-        todo!()
-    }
-
-    /// Set the creation date
-    pub(crate) fn with_created(self, _created: &str) -> Self {
-        todo!()
-    }
-
-    // /// Set the expiration date
-    // pub(crate) fn with_expires(mut self, expires: &str) -> Self {
-    //     self.options
-    //         .insert("expires".to_string(), Value::String(expires.to_string()));
-    //     self
-    // }
-
-    // /// Set the security domain
-    // pub(crate) fn with_domain(mut self, domain: &str) -> Self {
-    //     self.options
-    //         .insert("domain".to_string(), Value::String(domain.to_string()));
-    //     self
-    // }
-
-    // /// Set the challenge
-    // pub(crate) fn with_challenge(mut self, challenge: &str) -> Self {
-    //     self.options.insert(
-    //         "challenge".to_string(),
-    //         Value::String(challenge.to_string()),
-    //     );
-    //     self
-    // }
-
-    // /// Set the nonce
-    // pub(crate) fn with_nonce(mut self, nonce: &str) -> Self {
-    //     self.options
-    //         .insert("nonce".to_string(), Value::String(nonce.to_string()));
-    //     self
-    // }
-
-    /// Convert options to a JSON Value
-    pub(crate) fn to_value(&self) -> Value {
-        todo!();
-    }
-}
-
-/// Result of verifying a proof
-#[derive(Debug, Clone)]
-pub(crate) struct VerificationResult {
-    /// Whether the proof is valid
-    pub(crate) verified: bool,
-
-    /// The verified document (if verification succeeded)
-    pub(crate) verified_document: Option<Document>,
 }

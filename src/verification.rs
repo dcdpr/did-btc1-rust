@@ -22,7 +22,7 @@ pub enum VerificationMethodType {
 ///
 /// These look like DIDs with a `#fragment`. Used to identify [`VerificationMethod`]s.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerificationMethodId(String);
+pub struct VerificationMethodId(pub(crate) String);
 
 impl FromStr for VerificationMethodId {
     type Err = Error;
@@ -45,7 +45,7 @@ pub struct VerificationMethod<T> {
     pub controller: T,
 
     /// Public key
-    public_key: PublicKey,
+    pub public_key: PublicKey,
 }
 
 impl<T> VerificationMethod<T> {

@@ -98,7 +98,7 @@ impl TryFrom<&str> for CapabilityAction {
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         match s {
             "Write" => Ok(CapabilityAction::Write),
-            _ => return Err(Error::Zcap("Invalid capability action".to_string()))
+            _ => return Err(Error::Zcap("Invalid capability action".to_string())),
         }
     }
 }
@@ -159,7 +159,10 @@ mod tests {
     fn test_capability_action_conversion() {
         assert_eq!(CapabilityAction::Write.as_str(), "Write");
 
-        assert_eq!(CapabilityAction::try_from("Write").unwrap(), CapabilityAction::Write);
+        assert_eq!(
+            CapabilityAction::try_from("Write").unwrap(),
+            CapabilityAction::Write
+        );
     }
 
     #[test]
