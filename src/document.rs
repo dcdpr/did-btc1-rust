@@ -6,9 +6,9 @@ use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, Sha256H
 use crate::key::{PublicKey, PublicKeyExt as _};
 use crate::update::{DocumentPatch, Update};
 use crate::verification::{VerificationMethod, VerificationMethodId};
-use crate::zcap::proof::ProofPurpose;
+use crate::zcap::proof::{Proof, ProofPurpose};
 use crate::zcap::root_capability::dereference_root_capability;
-use crate::{blockchain::Traversal, identifier::TryNetworkExt, json_tools, zcap::proof::Proof};
+use crate::{blockchain::Traversal, identifier::TryNetworkExt, json_tools};
 use chrono::{DateTime, Utc};
 use esploda::bitcoin::{Address, Txid};
 use onlyerror::Error;
@@ -509,16 +509,11 @@ impl InitialDocument {
                 ))
             })?;
 
-        let verification_result = crypto_suite.data_integrity_verify_proof(
+        crypto_suite.data_integrity_verify_proof(
             public_key,
             update,
             &ProofPurpose::CapabilityInvocation,
         )?;
-
-        if verification_result.is_none() {
-            // todo: we are supposedly to return list of warning and error ProblemDetails?
-            return Err(Btc1Error::InvalidUpdateProof("Verification failed".into()));
-        }
 
         // YOU ARE HERE
         // step 11... Use json-patch crate to apply the update.patch to self

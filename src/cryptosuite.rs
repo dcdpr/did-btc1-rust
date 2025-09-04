@@ -26,8 +26,7 @@ impl CryptoSuite {
         mut inner: ProofInner,
     ) -> Result<Proof, Btc1Error> {
         // Add document context to proof if present
-        let context = unsecured_update.as_ref()["@context"].as_array();
-        if let Some(context) = context {
+        if let Some(context) = unsecured_update.as_ref()["@context"].as_array() {
             inner.context = context
                 .iter()
                 .flat_map(|e| e.as_str())
@@ -63,7 +62,7 @@ impl CryptoSuite {
         public_key: PublicKey,
         update: &Update,
         expected_proof_purpose: &ProofPurpose,
-    ) -> Result<Option<UnsecuredUpdate>, Btc1Error> {
+    ) -> Result<(), Btc1Error> {
         // Step 5
         if &update.proof.inner.proof_purpose != expected_proof_purpose {
             return Err(Btc1Error::ProofVerification(format!(
@@ -80,7 +79,7 @@ impl CryptoSuite {
         &self,
         public_key: PublicKey,
         update: &Update,
-    ) -> Result<Option<UnsecuredUpdate>, Btc1Error> {
+    ) -> Result<(), Btc1Error> {
         // Remove proof from update document
         let unsecured_update = UnsecuredUpdate::from(update);
 
@@ -88,8 +87,7 @@ impl CryptoSuite {
         let proof_bytes = multibase_decode(&update.proof.proof_value)?;
 
         // Compare @context
-        let context = update.as_ref()["@context"].as_array();
-        if let Some(context) = context {
+        if let Some(context) = update.as_ref()["@context"].as_array() {
             let contexts_are_equal = context.iter().zip(update.proof.inner.context.iter()).all(
                 |(update_context_entry, proof_context_entry)| {
                     update_context_entry
@@ -98,8 +96,11 @@ impl CryptoSuite {
                         .unwrap_or_default()
                 },
             );
+
             if !contexts_are_equal {
-                return Ok(None);
+                return Err(Btc1Error::InvalidUpdateProof(
+                    "Proof context does not match update context".into(),
+                ));
             }
         }
 
@@ -114,9 +115,7 @@ impl CryptoSuite {
         let hash_data = self.hash(&transformed_data, &proof_config);
 
         // Verify proof
-        let verified = self.proof_verify(hash_data, proof_bytes, public_key);
-
-        Ok(verified.then_some(unsecured_update))
+        self.proof_verify(hash_data, proof_bytes, public_key)
     }
 
     // bip340 cryptosuite spec Section 3.3.3
@@ -173,7 +172,7 @@ impl CryptoSuite {
         hash_data: Sha256Hash,
         proof_bytes: Signature,
         public_key: PublicKey,
-    ) -> bool {
+    ) -> Result<(), Btc1Error> {
         // Verify signature
         bip340_verify(hash_data, proof_bytes, &public_key.x_only_public_key().0)
     }
@@ -197,7 +196,7 @@ fn bip340_verify(
     message_hash: Sha256Hash,
     signature: Signature,
     public_key: &XOnlyPublicKey,
-) -> bool {
+) -> Result<(), Btc1Error> {
     let secp = Secp256k1::new();
 
     // Create message object from hash
@@ -205,7 +204,7 @@ fn bip340_verify(
 
     // Verify signature
     secp.verify_schnorr(&signature, &message, public_key)
-        .is_ok()
+        .map_err(|_| Btc1Error::InvalidUpdateProof("Verification failed".into()))
 }
 
 /// Encode binary data using Multibase (base58-btc)
