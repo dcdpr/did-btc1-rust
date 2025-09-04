@@ -13,6 +13,7 @@ use esploda::bitcoin::{Address, Txid};
 use onlyerror::Error;
 use serde_json::{Map, Value, json};
 use std::{collections::HashMap, fs, num::NonZeroU64, path::Path, str::FromStr};
+use crate::zcap::proof::ProofPurpose;
 
 const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
 // TODO: Needs to be updated (eventually) to "https://btc1.dev/context/v1"
@@ -73,7 +74,7 @@ pub(crate) struct DocumentFields<T> {
     /// Document controller
     controller: Vec<T>,
 
-    verification_method: Vec<VerificationMethod<T>>,
+    pub(crate) verification_method: Vec<VerificationMethod<T>>,
 
     authentication: Vec<VerificationMethodId>,
     assertion_method: Vec<VerificationMethodId>,
@@ -426,10 +427,7 @@ impl InitialDocument {
         Self::from_json_value(json!({
             "id": did.encode(),
             "@context": [DID_CORE_V1_1_CONTEXT, DID_BTC1_CONTEXT],
-
-            // TODO: The spec does not tell us to do this, but the test vectors expect it
             "controller": [did.encode()],
-
             "verificationMethod": [{
                 "id": verification_method_id,
                 "type": "Multikey",
@@ -486,7 +484,7 @@ impl InitialDocument {
 
     // Spec Section 7.2.2.5
     pub(crate) fn apply_update(&mut self, update: &Update) -> Result<(), Btc1Error> {
-        let capability_id = &update.proof.capability;
+        let capability_id = &update.proof.inner.capability;
         let did = dereference_root_capability(capability_id)?;
 
         if self.fields.id != did {
@@ -496,14 +494,34 @@ impl InitialDocument {
         }
 
         // TODO: Replace JCS asap
-        let crypto_suite = CryptoSuite::Jsc;
+        let crypto_suite = CryptoSuite::Jcs;
 
-        // TODO: This is defined by https://www.w3.org/TR/vc-data-integrity/#verify-proof
-        let _verification_result = crypto_suite.data_integrity_verify_proof(
-            "application/ld+json",
-            &update.proof,
-            "capabilityInvocation",
+        // Extract public key from the document
+        let verification_method = &update.proof.inner.verification_method;
+        let public_key = self
+            .fields
+            .verification_method
+            .iter()
+            .find_map(|method| (&method.id.0 == verification_method).then_some(method.public_key))
+            .ok_or_else(|| {
+                Btc1Error::ProofVerification(format!(
+                    "verificationMethod `{verification_method}` not found in document "
+                ))
+            })?;
+
+        let verification_result = crypto_suite.data_integrity_verify_proof(
+            public_key,
+            update,
+            &ProofPurpose::CapabilityInvocation,
         )?;
+
+        if verification_result.is_none() {
+            // todo: we are supposedly to return list of warning and error ProblemDetails?
+            return Err(Btc1Error::InvalidUpdateProof("Verification failed".into()))
+        }
+
+        // YOU ARE HERE
+        // step 11... Use json-patch crate to apply the update.patch to self
 
         todo!()
     }
