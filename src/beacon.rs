@@ -1,6 +1,7 @@
 use crate::identifier::Network;
 use esploda::bitcoin::address::Address;
 use onlyerror::Error;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{fmt, str::FromStr};
 
@@ -45,18 +46,18 @@ impl AddressExt for Address {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Beacon {
     id: String,
-    pub(crate) ty: Type,
+    pub(crate) ty: BeaconType,
     pub(crate) descriptor: Address,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Type {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum BeaconType {
     Singleton,
     Map,
     SparseMerkleTree,
 }
 
-impl FromStr for Type {
+impl FromStr for BeaconType {
     type Err = Error;
 
     fn from_str(ty: &str) -> Result<Self, Self::Err> {
@@ -69,7 +70,7 @@ impl FromStr for Type {
     }
 }
 
-impl fmt::Display for Type {
+impl fmt::Display for BeaconType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Singleton => f.write_str("SingletonBeacon"),
@@ -80,7 +81,7 @@ impl fmt::Display for Type {
 }
 
 impl Beacon {
-    pub(crate) fn new(id: String, ty: Type, descriptor: Address) -> Self {
+    pub(crate) fn new(id: String, ty: BeaconType, descriptor: Address) -> Self {
         Self { id, ty, descriptor }
     }
 
