@@ -6,7 +6,6 @@ use crate::update::{UnsecuredUpdate, Update};
 use crate::zcap::proof::{Proof, ProofInner, ProofPurpose, ProofValue};
 use crate::{error::Btc1Error, identifier::Sha256Hash, key::PublicKey};
 use multibase::{Base, decode, encode};
-use secp256k1::constants::SECRET_KEY_SIZE;
 use secp256k1::schnorr::Signature;
 use secp256k1::{KeyPair, Message, Secp256k1, SecretKey, XOnlyPublicKey};
 use serde_json::Value;
@@ -160,11 +159,12 @@ impl CryptoSuite {
         // the "verificationMethod"
         // For this stub, we'll just generate a dummy signature
 
-        // TODO: Implement actual key retrieval
-        let private_key_bytes = [0u8; SECRET_KEY_SIZE]; // todo: need to get a real key (using `verification_method`)
+        // TODO: Implement actual key retrieval (using `verification_method`)
+        let private_key_bytes = [0u8; secp256k1::constants::SECRET_KEY_SIZE];
+        let secret_key = SecretKey::from_slice(&private_key_bytes).unwrap();
 
         // Sign hash with BIP340
-        bip340_sign(hash_data, private_key_bytes)
+        bip340_sign(hash_data, secret_key)
     }
 
     // bip340 cryptosuite spec Section 3.3.7
@@ -180,12 +180,8 @@ impl CryptoSuite {
 }
 
 /// Sign data using BIP340 Schnorr signatures
-fn bip340_sign(
-    message_hash: Sha256Hash,
-    private_key_bytes: [u8; SECRET_KEY_SIZE],
-) -> Result<Signature, Btc1Error> {
+fn bip340_sign(message_hash: Sha256Hash, secret_key: SecretKey) -> Result<Signature, Btc1Error> {
     let secp = Secp256k1::new();
-    let secret_key = SecretKey::from_slice(&private_key_bytes).unwrap();
 
     // Create message object from hash
     let message = Message::from_slice(&message_hash.0).unwrap();
