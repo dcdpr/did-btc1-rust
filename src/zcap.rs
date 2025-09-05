@@ -1,195 +1,91 @@
-//! # Authorization Capabilities (ZCAP) for DID:BTC1
+//! Root Capability derivation and management for DID:BTC1
 //!
-//! This module implements the ZCAP-LD (Authorization Capabilities Linked Data)
-//! functionality required by the DID:BTC1 specification. It provides:
-//!
-//! - Root capability derivation from DID identifiers
-//! - Capability invocation proofs for DID updates
-//! - ZCAP object management and validation
-//!
-//! ## Key Concepts
-//!
-//! - **Root Capability**: A deterministic capability derived from a DID identifier
-//!   that authorizes updates to that DID's document
-//! - **Capability Invocation**: A cryptographic proof that invokes a capability
-//!   to perform an authorized action (like updating a DID document)
-//! - **Capability Action**: The specific action being authorized (typically "Write" for DID updates)
-//!
-//! ## Example
-//!
-//! // TODO: This test is broken because `Document::from_json_value()` expects a usable Document.
-//! ```no-test
-//! use did_btc1::zcap::{derive_root_capability, create_capability_invocation_proof, CapabilityInvocationOptions, CapabilityAction};
-//! use did_btc1::Document;
-//! use urlencoding;
-//! use serde_json::json;
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Derive root capability from DID
-//! let did = "did:btc1:k1qqpuwwde82nennsavvf0lqfnlvx7frrgzs57lchr02q8mz49qzaaxmqphnvcx";
-//! let root_cap = derive_root_capability(did)?;
-//!
-//! // Create a DID update payload document
-//! let payload_data = json!({
-//!     "@context": [
-//!         "https://w3id.org/zcap/v1",
-//!         "https://w3id.org/security/data-integrity/v2",
-//!         "https://w3id.org/json-ld-patch/v1"
-//!     ],
-//!     "patch": [{
-//!         "op": "add",
-//!         "path": "/service/1",
-//!         "value": {
-//!             "id": "#my-service",
-//!             "type": "MyService",
-//!             "serviceEndpoint": "https://example.com"
-//!         }
-//!     }],
-//!     "sourceHash": "z123...",
-//!     "targetHash": "z456...",
-//!     "targetVersionId": 2
-//! });
-//! let document = Document::from_json_value(payload_data)?;
-//!
-//! // Create capability invocation proof options
-//! let options = CapabilityInvocationOptions::new()
-//!     .with_verification_method(&format!("{did}#initialKey"))
-//!     .with_capability(&root_cap.id)
-//!     .with_capability_action(CapabilityAction::Write)
-//!     .with_invocation_target(did);
-//!
-//! // Create the signed document (Note: will fail without key resolution)
-//! // let signed_document = create_capability_invocation_proof(&document, &options)?;
-//! # Ok(())
-//! # }
-//! ```
+//! This module implements the algorithms specified in section 11.4 of the DID:BTC1
+//! specification for deriving and dereferencing root capabilities.
 
-// TODO: This module needs a lot of work!
-#![allow(dead_code)]
+use crate::error::Btc1Error;
+use crate::identifier::Did;
 
 pub(crate) mod proof;
-pub(crate) mod root_capability;
 
-use crate::error::Error;
-use serde::{Deserialize, Serialize};
+/// Derive a root capability from a DID:BTC1 identifier
+///
+/// This implements the algorithm from section 9.4.1 of the DID:BTC1 specification:
+/// "Derive Root Capability from did:btc1 Identifier"
+///
+/// # Arguments
+///
+/// * `did_identifier` - The DID:BTC1 identifier (e.g., "did:btc1:k1qqpuww...")
+///
+/// # Returns
+///
+/// * `Ok(RootCapability)` - The derived root capability
+/// * `Err(Error)` - If the DID identifier is invalid
+#[allow(dead_code)] // todo: not needed until we impl Update
+pub(crate) fn derive_root_capability(did_identifier: Did) -> String {
+    // Step 3: URL encode the DID identifier
+    let encoded_identifier = urlencoding::encode(did_identifier.encode());
 
-/// ZCAP-LD context URL
-pub(crate) const ZCAP_CONTEXT: &str = "https://w3id.org/zcap/v1";
-
-/// Standard capability actions for DID operations
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum CapabilityAction {
-    /// Write action - allows updating DID documents
-    Write,
+    // Step 4: Construct capability ID
+    format!("urn:zcap:root:{encoded_identifier}")
 }
 
-impl CapabilityAction {
-    /// Convert to string representation
-    pub(crate) fn as_str(&self) -> &str {
-        match self {
-            CapabilityAction::Write => "Write",
-        }
-    }
-}
+/// Dereference a root capability identifier to get the capability object
+///
+/// This implements the algorithm from section 11.4.2 of the DID:BTC1 specification:
+/// "Dereference Root Capability Identifier"
+///
+/// # Arguments
+///
+/// * `capability_id` - The capability identifier (e.g., "urn:zcap:root:did%3Abtc1%3A...")
+///
+/// # Returns
+///
+/// * `Ok(Did)` - The dereferenced root capability as a did
+/// * `Err(Error)` - If the capability ID is invalid
+pub(crate) fn dereference_root_capability(capability_id: &str) -> Result<Did, Btc1Error> {
+    let Some(did_identifier_str) = capability_id.strip_prefix("urn:zcap:root:") else {
+        return Err(Btc1Error::Zcap("invalid root capability".into()));
+    };
 
-impl TryFrom<&str> for CapabilityAction {
-    type Error = Error;
+    let did = urlencoding::decode(did_identifier_str)
+        .map_err(|e| Btc1Error::Zcap(format!("Failed to decode DID from capability ID: {e:?}")))?;
 
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        match s {
-            "Write" => Ok(CapabilityAction::Write),
-            _ => return Err(Error::Zcap("Invalid capability action".to_string())),
-        }
-    }
-}
-
-/// Common ZCAP validation functions
-pub(crate) mod validation {
-    use super::*;
-
-    /// Validate that a capability ID follows the expected format
-    /// Format: urn:zcap:root:{url_encoded_did}
-    pub(crate) fn validate_capability_id(capability_id: &str) -> Result<(), Error> {
-        let components: Vec<&str> = capability_id.split(':').collect();
-
-        if components.len() != 4 {
-            return Err(crate::error::Error::Zcap(format!(
-                "Invalid capability ID format: {capability_id}"
-            )));
-        }
-
-        if components[0] != "urn" || components[1] != "zcap" || components[2] != "root" {
-            return Err(crate::error::Error::Zcap(format!(
-                "Invalid capability ID prefix: {capability_id}"
-            )));
-        }
-
-        // components[3] should be a URL-encoded DID identifier
-        if components[3].is_empty() {
-            return Err(crate::error::Error::Zcap(
-                "Empty DID identifier in capability ID".to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-
-    /// Extract the DID identifier from a capability ID
-    pub(crate) fn extract_did_from_capability_id(capability_id: &str) -> Result<String, Error> {
-        validate_capability_id(capability_id)?;
-
-        let components: Vec<&str> = capability_id.split(':').collect();
-        let encoded_did = components[3];
-
-        // URL decode the DID identifier
-        let decoded_did = urlencoding::decode(encoded_did).map_err(|e| {
-            crate::error::Error::Zcap(format!("Failed to decode DID from capability ID: {e:?}"))
-        })?;
-
-        Ok(decoded_did.to_string())
-    }
+    did.parse()
+        .map_err(|err| Btc1Error::Zcap(format!("Invalid DID in root capability: {err}")))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::validation::*;
     use super::*;
 
-    #[test]
-    fn test_capability_action_conversion() {
-        assert_eq!(CapabilityAction::Write.as_str(), "Write");
+    const TEST_DID: &str =
+        "did:btc1:k1qqpuwwde82nennsavvf0lqfnlvx7frrgzs57lchr02q8mz49qzaaxmqphnvcx";
+    const TEST_CAP_ID: &str = "urn:zcap:root:did%3Abtc1%3Ak1qqpuwwde82nennsavvf0lqfnlvx7frrgzs57lchr02q8mz49qzaaxmqphnvcx";
 
-        assert_eq!(
-            CapabilityAction::try_from("Write").unwrap(),
-            CapabilityAction::Write
-        );
+    #[test]
+    fn test_dereference_root_capability() {
+        let root_did = dereference_root_capability(TEST_CAP_ID).unwrap();
+        assert_eq!(root_did.encode(), TEST_DID);
     }
 
     #[test]
-    fn test_validate_capability_id() {
-        // Valid capability ID
-        let valid_id = "urn:zcap:root:did%3Abtc1%3Ak1qqpuwwde82nennsavvf0lqfnlvx7frrgzs57lchr02q8mz49qzaaxmqphnvcx";
-        assert!(validate_capability_id(valid_id).is_ok());
-
-        // Invalid format - wrong number of components
-        assert!(validate_capability_id("urn:zcap:root").is_err());
-        assert!(validate_capability_id("urn:zcap:root:id:extra").is_err());
-
-        // Invalid prefix
-        assert!(validate_capability_id("urn:invalid:root:did%3Abtc1").is_err());
-        assert!(validate_capability_id("invalid:zcap:root:did%3Abtc1").is_err());
-
-        // Empty DID
-        assert!(validate_capability_id("urn:zcap:root:").is_err());
+    fn test_dereference_root_capability_invalid_id() {
+        // Invalid capability ID formats
+        assert!(dereference_root_capability("invalid").is_err());
+        assert!(dereference_root_capability("urn:zcap:invalid:test").is_err());
+        assert!(dereference_root_capability("urn:invalid:root:test").is_err());
+        assert!(dereference_root_capability("invalid:zcap:root:test").is_err());
     }
 
     #[test]
-    fn test_extract_did_from_capability_id() {
-        let capability_id = "urn:zcap:root:did%3Abtc1%3Ak1test";
-        let extracted = extract_did_from_capability_id(capability_id).unwrap();
-        assert_eq!(extracted, "did:btc1:k1test");
+    fn test_round_trip() {
+        // Derive capability from DID
+        let root_capability_id = derive_root_capability(TEST_DID.parse().unwrap());
 
-        // Invalid capability ID should fail
-        assert!(extract_did_from_capability_id("invalid").is_err());
+        // Dereference the capability ID
+        let dereferenced_did = dereference_root_capability(&root_capability_id).unwrap();
+
+        assert_eq!(TEST_DID, dereferenced_did.encode());
     }
 }
