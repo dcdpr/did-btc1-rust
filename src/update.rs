@@ -1,5 +1,6 @@
 use crate::zcap::proof::Proof;
 use crate::{canonical_hash::CanonicalHash, error::Btc1Error, identifier::Sha256Hash, json_tools};
+use json_patch::Patch;
 use onlyerror::Error;
 use serde_json::Value;
 use std::{fs, num::NonZeroU64, path::Path};
@@ -26,9 +27,10 @@ pub enum Error {
 #[derive(Clone, Debug)]
 pub struct Update {
     pub(crate) source_hash: Sha256Hash,
-    pub(crate) _target_hash: Sha256Hash,
+    pub(crate) target_hash: Sha256Hash,
     pub(crate) target_version_id: NonZeroU64,
     pub(crate) proof: Proof,
+    pub(crate) patch: Patch,
 
     pub(crate) json: Value,
 }
@@ -50,19 +52,21 @@ impl Update {
         use json_tools::*;
 
         let source_hash = hash_from_object(&json, "sourceHash")?;
-        let _target_hash = hash_from_object(&json, "targetHash")?;
+        let target_hash = hash_from_object(&json, "targetHash")?;
         let target_version_id = u64::try_from(int_from_object(&json, "targetVersionId")?)
             .map_err(|_| Error::InvalidTargetVersionId)?
             .try_into()
             .map_err(|_| Error::InvalidTargetVersionId)?;
         // TODO: Check whether "proof" exists as a key.
         let proof = serde_json::from_value(json["proof"].clone())?;
+        let patch = serde_json::from_value(json["patch"].clone())?;
 
         Ok(Self {
             source_hash,
-            _target_hash,
+            target_hash,
             target_version_id,
             proof,
+            patch,
             json,
         })
     }

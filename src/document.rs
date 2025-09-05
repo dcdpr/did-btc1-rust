@@ -1,4 +1,4 @@
-use crate::beacon::{AddressExt as _, Beacon};
+use crate::beacon::{AddressExt as _, Beacon, BeaconType};
 use crate::canonical_hash::CanonicalHash;
 use crate::cryptosuite::CryptoSuite;
 use crate::error::{Btc1Error, ProblemDetails};
@@ -6,13 +6,13 @@ use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, Sha256H
 use crate::key::{PublicKey, PublicKeyExt as _};
 use crate::update::{DocumentPatch, Update};
 use crate::verification::{VerificationMethod, VerificationMethodId};
-use crate::zcap::proof::{Proof, ProofPurpose};
-use crate::zcap::root_capability::dereference_root_capability;
+use crate::zcap::{proof::ProofPurpose, root_capability::dereference_root_capability};
 use crate::{blockchain::Traversal, identifier::TryNetworkExt, json_tools};
 use chrono::{DateTime, Utc};
 use esploda::bitcoin::{Address, Txid};
+use json_patch::patch;
 use onlyerror::Error;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::{collections::HashMap, fs, num::NonZeroU64, path::Path, str::FromStr};
 
 const DID_CORE_V1_1_CONTEXT: &str = "https://www.w3.org/TR/did-1.1";
@@ -198,7 +198,7 @@ pub struct Document {
     /// All structural Document fields
     pub(crate) fields: DocumentFields<Did>,
     /// The document data as a JSON Value
-    data: Map<String, Value>,
+    json_data: Value,
 }
 
 impl Document {
@@ -284,56 +284,23 @@ impl Document {
     }
 
     /// Create a document from a JSON Value
-    pub fn from_json_value(value: Value) -> Result<Self, Error> {
-        let fields = DocumentFields::try_from((&value, None))?;
+    pub fn from_json_value(json_data: Value) -> Result<Self, Error> {
+        let fields = DocumentFields::try_from((&json_data, None))?;
 
-        match value {
-            Value::Object(map) => Ok(Self { fields, data: map }),
-            _ => unreachable!(), // todo: parse don't validate
-        }
-    }
-
-    /// Get the document data (for accessing raw JSON fields)
-    pub fn get_data(&self) -> &Map<String, Value> {
-        &self.data
+        Ok(Self { fields, json_data })
     }
 
     /// Save the document to a file
     pub fn to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
         let json = self.to_json_string()?;
         fs::write(path, json)?;
+
         Ok(())
     }
 
     /// Convert the document to a JSON string
     pub fn to_json_string(&self) -> Result<String, Error> {
-        let value = Value::Object(self.data.clone());
-        let json = serde_json::to_string_pretty(&value)?;
-        Ok(json)
-    }
-
-    /// Get the proof from the document if it exists
-    pub fn get_proof(&self) -> Option<Proof> {
-        self.data
-            .get("proof")
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
-    }
-
-    /// Create a new document with the proof removed
-    pub fn without_proof(&self) -> Self {
-        let mut doc = self.clone();
-        doc.data.remove("proof");
-
-        doc
-    }
-
-    /// Create a new document with the given proof added
-    pub fn with_proof(&self, proof: &Proof) -> Result<Self, Error> {
-        let mut doc = self.clone();
-        let proof_value = serde_json::to_value(proof)?;
-        doc.data.insert("proof".to_string(), proof_value);
-
-        Ok(doc)
+        Ok(serde_json::to_string_pretty(&self.json_data)?)
     }
 }
 
@@ -341,13 +308,18 @@ impl From<InitialDocument> for Document {
     fn from(doc: InitialDocument) -> Self {
         Self {
             fields: doc.fields,
-            data: match doc.json_data {
-                Value::Object(map) => map,
-                _ => unreachable!(),
-            },
+            json_data: doc.json_data,
         }
     }
 }
+
+impl AsRef<Value> for Document {
+    fn as_ref(&self) -> &Value {
+        &self.json_data
+    }
+}
+
+impl CanonicalHash for Document {}
 
 /// Representation of initial DID document, according to did::btc1 specification.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -375,7 +347,7 @@ impl InitialDocument {
 
         Ok(Self {
             fields: doc.fields,
-            json_data: Value::Object(doc.data),
+            json_data: doc.json_data,
         })
     }
 
@@ -460,7 +432,7 @@ impl InitialDocument {
 
         // Step 3: Validate conformant DID document according to the DID Core 1.1 specification
 
-        // todo: call some simple validation function that checks for top-level "id" entry
+        // todo: Add a function to validate DID document conformance
 
         Ok(initial_document)
     }
@@ -515,10 +487,22 @@ impl InitialDocument {
             &ProofPurpose::CapabilityInvocation,
         )?;
 
-        // YOU ARE HERE
-        // step 11... Use json-patch crate to apply the update.patch to self
+        // Step 11
+        patch(&mut self.json_data, &update.patch)
+            .map_err(|_| Btc1Error::InvalidDidUpdate("Unable to apply JSON Patch".into()))?;
 
-        todo!()
+        // Step 12
+        self.fields = DocumentFields::try_from((&self.json_data, None)).map_err(|_| {
+            Btc1Error::InvalidDidUpdate("Updated DID document is non-conformant".into())
+        })?;
+
+        if self.hash() != update.target_hash {
+            return Err(Btc1Error::InvalidDidUpdate(
+                "Hash of updated document does not match target hash".into(),
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -615,8 +599,6 @@ fn generate_beacons(
     did: &Did,
     _resolution_options: &ResolutionOptions,
 ) -> Result<Vec<Beacon>, Error> {
-    use crate::beacon::Type;
-
     let secp = secp256k1::Secp256k1::verification_only();
     let network = did.components().network().try_into()?;
     // TODO: After the `bitcoin` crate is updated, we can remove this extra public key constructor.
@@ -632,9 +614,9 @@ fn generate_beacons(
 
     // TODO: Allow overriding the default minimum confirmations required in `ResolutionOptions`?
     Ok(vec![
-        Beacon::new(p2pkh_id, Type::Singleton, p2pkh_beacon),
-        Beacon::new(p2wpkh_id, Type::Singleton, p2wpkh_beacon),
-        Beacon::new(p2tr_id, Type::Singleton, p2tr_beacon),
+        Beacon::new(p2pkh_id, BeaconType::Singleton, p2pkh_beacon),
+        Beacon::new(p2wpkh_id, BeaconType::Singleton, p2wpkh_beacon),
+        Beacon::new(p2tr_id, BeaconType::Singleton, p2tr_beacon),
     ])
 }
 
@@ -642,7 +624,6 @@ fn generate_beacons(
 mod tests {
     use super::*;
     use crate::blockchain::TraversalState;
-    use esploda::esplora::Transaction;
 
     impl Did {
         fn hash_unchecked(&self) -> Sha256Hash {
@@ -728,7 +709,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "blockchain traversal is incomplete"]
     fn test_document_from_did_components() {
         let id_type = IdType::from(
             PublicKey::from_slice(
@@ -749,8 +729,8 @@ mod tests {
             unreachable!()
         };
 
-        let request_urls = requests
-            .into_iter()
+        let request_urls = requests[&BeaconType::Singleton]
+            .iter()
             .map(|req| req.uri().to_string())
             .collect::<Vec<_>>();
         assert_eq!(
@@ -765,13 +745,20 @@ mod tests {
         let json = include_str!(
             "../fixtures/k1qypa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dagl0mgs4-transactions.json"
         );
-        let transactions: Vec<Transaction> = serde_json::from_str(json).unwrap();
+        let transactions: HashMap<_, _> = serde_json::from_str(json).unwrap();
         let fsm = next_state.process_responses(transactions);
 
         let TraversalState::Resolved(document) = fsm.traverse().unwrap() else {
             unreachable!()
         };
         assert_eq!(document.fields.id.encode(), did.encode());
+
+        let target_doc = Document::from_json_string(include_str!(concat!(
+            "../test-suite/signet/k1qypa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dagl0mgs4",
+            "/targetDocument.json",
+        )))
+        .unwrap();
+        assert_eq!(document.hash(), target_doc.hash());
     }
 
     #[test]

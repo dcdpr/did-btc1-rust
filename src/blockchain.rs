@@ -1,12 +1,14 @@
-use crate::beacon::Type as BeaconType;
+use crate::beacon::BeaconType;
 use crate::canonical_hash::CanonicalHash as _;
 use crate::document::{Document, InitialDocument, ResolutionOptions, SignalsMetadata};
+use crate::update::UnsecuredUpdate;
 use crate::{error::Btc1Error, identifier::Sha256Hash, update::Update};
 use chrono::{DateTime, Utc};
 use esploda::bitcoin::{Txid, opcodes::all::OP_RETURN, script::Instruction};
 use esploda::esplora::{Status, Transaction};
 use onlyerror::Error;
-use std::{collections::HashMap, num::NonZeroU64};
+use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU64;
 
 const DEFAULT_RPC_BASE_URL: &str = "https://blockstream.info/testnet/api";
 
@@ -23,6 +25,9 @@ pub enum Error {
     /// Update hash does not match
     UpdateHashMismatch,
 
+    /// Late Publishing Error
+    LatePublishingError,
+
     /// DID:BTC1 error
     Btc1Error(#[from] crate::error::Btc1Error),
 }
@@ -31,12 +36,12 @@ pub enum Error {
 #[derive(Debug)]
 pub struct Traversal<T = ()> {
     contemporary_doc: InitialDocument,
-    contemporary_block_height: u32,
     current_version_id: NonZeroU64,
     target_condition: TargetCondition,
     update_hash_history: Vec<Sha256Hash>,
     signals_metadata: HashMap<Txid, SignalsMetadata>,
     rpc_host: String,
+    request_cache: HashSet<esploda::http::Uri>,
 
     // Finite State Machine
     fsm: TraversalFsm,
@@ -52,7 +57,6 @@ impl Traversal {
 
         Self {
             contemporary_doc: initial_doc,
-            contemporary_block_height: 0,
             current_version_id: 1.try_into().unwrap(),
             target_condition: TargetCondition::from(resolution_options),
             update_hash_history: vec![],
@@ -63,6 +67,7 @@ impl Traversal {
                 .and_then(|data| data.blockchain_rpc_uri.as_deref())
                 .unwrap_or(DEFAULT_RPC_BASE_URL)
                 .to_string(),
+            request_cache: HashSet::new(),
             fsm: TraversalFsm::Init,
             _type_state: (),
         }
@@ -71,12 +76,12 @@ impl Traversal {
     fn from_waiting_for_responses(traversal: Traversal<WaitingForResponses>) -> Self {
         Self {
             contemporary_doc: traversal.contemporary_doc,
-            contemporary_block_height: traversal.contemporary_block_height,
             current_version_id: traversal.current_version_id,
             target_condition: traversal.target_condition,
             update_hash_history: traversal.update_hash_history,
             signals_metadata: traversal.signals_metadata,
             rpc_host: traversal.rpc_host,
+            request_cache: traversal.request_cache,
             fsm: traversal.fsm,
             _type_state: (),
         }
@@ -116,8 +121,7 @@ impl Traversal {
                     return Ok(TraversalState::Resolved(self.contemporary_doc.into()));
                 }
 
-                // Step 7.
-                self.contemporary_block_height = next_signals[0].block_height;
+                // Step 7: unnecessary
 
                 // Step 8.
                 let mut updates = self.process_beacon_signals(next_signals)?;
@@ -128,7 +132,7 @@ impl Traversal {
                     .sort_unstable_by_key(|update| update.target_version_id);
 
                 // Step 10.
-                let contemporary_hash = self.contemporary_doc.hash();
+                let mut contemporary_hash = self.contemporary_doc.hash();
 
                 for update in updates {
                     // Step 10.1.
@@ -139,7 +143,8 @@ impl Traversal {
                     }
 
                     // Step 10.2.
-                    if update.target_version_id == self.current_version_id.checked_add(1).unwrap() {
+                    let next_update_version_id = self.current_version_id.checked_add(1).unwrap();
+                    if update.target_version_id == next_update_version_id {
                         // Step 10.2.1.
                         if update.source_hash != contemporary_hash {
                             return Err(Btc1Error::late_publishing(
@@ -148,14 +153,47 @@ impl Traversal {
                             ))?;
                         }
 
-                        // Step 10.2.2.
+                        // Step 10.2.2 - 10.2.3.
                         self.contemporary_doc.apply_update(&update)?;
 
-                        todo!()
+                        // Step 10.2.4.
+                        self.current_version_id = next_update_version_id;
+
+                        // Step 13.
+                        // Yes, we need to do 13 here: there is a bug in the spec.
+                        if let TargetCondition::VersionId(version_id) = self.target_condition
+                            && version_id == self.current_version_id
+                        {
+                            return Ok(TraversalState::Resolved(self.contemporary_doc.into()));
+                        }
+
+                        // Step 10.2.5 - 10.2.6.
+                        let unsecured_update = UnsecuredUpdate::from(&update);
+
+                        // Step 10.2.7 - 10.2.8.
+                        self.update_hash_history.push(unsecured_update.hash());
+
+                        // Step 10.2.9.
+                        contemporary_hash = self.contemporary_doc.hash();
+                    }
+
+                    // Step 10.3.
+                    if update.target_version_id > self.current_version_id.checked_add(1).unwrap() {
+                        return Err(Error::LatePublishingError);
                     }
                 }
 
-                todo!()
+                // Step 11: unnecessary
+
+                // Step 12.
+                let TraversalState::Requests(fsm, signals) = self.next_signals_requests() else {
+                    unreachable!()
+                };
+                if signals.is_empty() {
+                    Ok(TraversalState::Resolved(fsm.contemporary_doc.into()))
+                } else {
+                    Ok(TraversalState::Requests(fsm, signals))
+                }
             }
 
             TraversalFsm::Requests => Err(Error::WaitingForResponses),
@@ -163,13 +201,15 @@ impl Traversal {
     }
 
     // Spec section 7.2.2.2
-    // TODO: This function needs to take `HashMap<BeaconType, Transaction>`, not just
-    // `Vec<Transaction>` so that we can set `next_signal.beacon_type` appropriately.
-    fn find_next_signals(&self, transactions: Vec<Transaction>) -> Vec<NextSignal> {
-        transactions
+    fn find_next_signals(
+        &self,
+        mut transactions: HashMap<BeaconType, Vec<Transaction>>,
+    ) -> Vec<NextSignal> {
+        // todo: we need to deal with other two BeaconTypes
+        let entry = transactions.entry(BeaconType::Singleton).or_default();
+        entry
             .into_iter()
-            .enumerate()
-            .filter_map(|(i, tx)| {
+            .filter_map(|tx| {
                 let txout = tx.outputs.last().unwrap();
                 let ops = txout
                     .script_pubkey
@@ -183,44 +223,41 @@ impl Traversal {
                 };
                 let signal_bytes = Sha256Hash(bytes.as_bytes().try_into().ok()?);
 
-                let (block_height, block_time) = match tx.status {
+                let block_time = match tx.status {
                     Status::Unconfirmed => todo!("Unconfirmed transactions are not supported yet"),
-                    Status::Confirmed {
-                        block_height,
-                        block_time,
-                        ..
-                    } => (block_height, block_time),
+                    Status::Confirmed { block_time, .. } => block_time,
                 };
 
                 Some(NextSignal {
-                    _beacon_id: i,
-                    // TODO: Currently only supports SingletonBeacon
                     beacon_type: BeaconType::Singleton,
                     txid: tx.txid,
                     signal_bytes,
-                    block_height,
                     block_time,
                 })
             })
             .collect()
     }
 
-    fn next_signals_requests(self) -> TraversalState {
-        let requests = self
-            .contemporary_doc
-            .fields
-            .service
-            .iter()
-            .map(|b| {
-                // TODO: Move this to Esploda
-                esploda::Req::builder()
-                    .uri(format!("{}/address/{}/txs", self.rpc_host, b.descriptor))
-                    .body(())
-                    .unwrap()
-            })
-            .collect();
+    fn next_signals_requests(mut self) -> TraversalState {
+        let mut map: HashMap<_, Vec<_>> = HashMap::new();
 
-        TraversalState::Requests(Traversal::from_init(self), requests)
+        for beacon in &self.contemporary_doc.fields.service {
+            // TODO: Move this to Esploda
+            let req = esploda::Req::builder()
+                .uri(format!(
+                    "{}/address/{}/txs",
+                    self.rpc_host, beacon.descriptor
+                ))
+                .body(())
+                .unwrap();
+
+            if !self.request_cache.contains(req.uri()) {
+                self.request_cache.insert(req.uri().clone());
+                map.entry(beacon.ty).or_default().push(req);
+            }
+        }
+
+        TraversalState::Requests(Traversal::from_init(self), map)
     }
 
     // Spec section 7.2.2.3
@@ -269,18 +306,21 @@ impl Traversal<WaitingForResponses> {
     fn from_init(traversal: Traversal) -> Self {
         Self {
             contemporary_doc: traversal.contemporary_doc,
-            contemporary_block_height: traversal.contemporary_block_height,
             current_version_id: traversal.current_version_id,
             target_condition: traversal.target_condition,
             update_hash_history: traversal.update_hash_history,
             signals_metadata: traversal.signals_metadata,
             rpc_host: traversal.rpc_host,
+            request_cache: traversal.request_cache,
             fsm: traversal.fsm,
             _type_state: WaitingForResponses,
         }
     }
 
-    pub fn process_responses(mut self, transactions: Vec<Transaction>) -> Traversal {
+    pub fn process_responses(
+        mut self,
+        transactions: HashMap<BeaconType, Vec<Transaction>>,
+    ) -> Traversal {
         self.fsm = TraversalFsm::FindNextSignals(transactions);
 
         Traversal::from_waiting_for_responses(self)
@@ -300,13 +340,17 @@ enum TraversalFsm {
     Requests,
 
     /// FSM is ready to find the next beacon signals.
-    FindNextSignals(Vec<Transaction>),
+    FindNextSignals(HashMap<BeaconType, Vec<Transaction>>),
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum TraversalState {
     /// Requests need to be sent to the blockchain.
-    Requests(Traversal<WaitingForResponses>, Vec<esploda::Req>),
+    Requests(
+        Traversal<WaitingForResponses>,
+        HashMap<BeaconType, Vec<esploda::Req>>,
+    ),
 
     /// Document is fully resolved.
     Resolved(Document),
@@ -314,18 +358,14 @@ pub enum TraversalState {
 
 #[derive(Debug)]
 struct NextSignal {
-    _beacon_id: usize,
-    beacon_type: crate::beacon::Type,
+    beacon_type: BeaconType,
     txid: Txid,
     signal_bytes: Sha256Hash,
-    block_height: u32,
     block_time: DateTime<Utc>,
 }
 
 #[derive(Debug)]
 enum TargetCondition {
-    // TODO: This should come in later in the implementation
-    #[allow(dead_code)]
     VersionId(NonZeroU64),
 
     Time(DateTime<Utc>),
@@ -346,7 +386,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "blockchain traversal is incomplete"]
     fn test_traversal() {
         let initial_document =
             InitialDocument::from_json_string(include_str!(concat!(
@@ -364,8 +403,8 @@ mod tests {
             unreachable!()
         };
 
-        let request_urls = requests
-            .into_iter()
+        let request_urls = requests[&BeaconType::Singleton]
+            .iter()
             .map(|req| req.uri().to_string())
             .collect::<Vec<_>>();
         assert_eq!(
@@ -380,15 +419,40 @@ mod tests {
         let json = include_str!(
             "../fixtures/k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp-transactions.json"
         );
-        let transactions: Vec<Transaction> = serde_json::from_str(json).unwrap();
+        let transactions: HashMap<_, _> = serde_json::from_str(json).unwrap();
+        let fsm = next_state.process_responses(transactions.clone());
+
+        let TraversalState::Requests(next_state, requests) = fsm.traverse().unwrap() else {
+            unreachable!()
+        };
+
+        let request_urls = requests[&BeaconType::Singleton]
+            .iter()
+            .map(|req| req.uri().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            request_urls,
+            [
+                "https://blockstream.info/testnet/api/address/tb1qcs60r4j6ema8x4gf07hgt83x45e650dr97q3qv/txs",
+            ]
+        );
+
         let fsm = next_state.process_responses(transactions);
 
         let TraversalState::Resolved(document) = fsm.traverse().unwrap() else {
             unreachable!()
         };
+
         assert_eq!(
             document.fields.id.encode(),
             "did:btc1:k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp",
         );
+
+        let target_doc = Document::from_json_string(include_str!(concat!(
+            "../test-suite/mutinynet/k1q5pa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dag02h0cp",
+            "/targetDocument.json",
+        )))
+        .unwrap();
+        assert_eq!(document.hash(), target_doc.hash());
     }
 }
