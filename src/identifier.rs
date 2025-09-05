@@ -354,10 +354,6 @@ impl DidComponents {
     pub fn id_type(&self) -> IdType {
         self.id_type
     }
-
-    pub fn genesis_bytes(&self) -> &[u8] {
-        todo!(); //&self.genesis_bytes
-    }
 }
 
 /// Parse a DID:BTC1 identifier string into its components

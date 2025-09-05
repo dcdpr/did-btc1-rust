@@ -5,7 +5,7 @@ use crate::error::{Btc1Error, ProblemDetails};
 use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, Sha256Hash};
 use crate::key::{PublicKey, PublicKeyExt as _};
 use crate::verification::{VerificationMethod, VerificationMethodId};
-use crate::zcap::{proof::ProofPurpose, root_capability::dereference_root_capability};
+use crate::zcap::{dereference_root_capability, proof::ProofPurpose};
 use crate::{identifier::TryNetworkExt, json_tools, resolver::Resolver, update::Update};
 use chrono::{DateTime, Utc};
 use esploda::bitcoin::{Address, Txid};
