@@ -4,13 +4,12 @@ use crate::cryptosuite::CryptoSuite;
 use crate::error::{Btc1Error, ProblemDetails};
 use crate::identifier::{Did, DidComponents, DidVersion, IdType, Network, Sha256Hash};
 use crate::key::{PublicKey, PublicKeyExt as _};
-use crate::update::{DocumentPatch, Update};
 use crate::verification::{VerificationMethod, VerificationMethodId};
 use crate::zcap::{proof::ProofPurpose, root_capability::dereference_root_capability};
-use crate::{blockchain::Traversal, identifier::TryNetworkExt, json_tools};
+use crate::{identifier::TryNetworkExt, json_tools, resolver::Resolver, update::Update};
 use chrono::{DateTime, Utc};
 use esploda::bitcoin::{Address, Txid};
-use json_patch::patch;
+use json_patch::Patch;
 use onlyerror::Error;
 use serde_json::{Value, json};
 use std::{collections::HashMap, fs, num::NonZeroU64, path::Path, str::FromStr};
@@ -85,6 +84,7 @@ pub(crate) struct DocumentFields<T> {
     pub(crate) service: Vec<Beacon>,
 }
 
+// TODO: Can we replace this with serde?
 impl<T> TryFrom<(&Value, Option<Network>)> for DocumentFields<T>
 where
     T: FromStr + TryNetworkExt,
@@ -206,11 +206,11 @@ impl Document {
     pub fn from_did_components(
         did_components: DidComponents,
         resolution_options: ResolutionOptions,
-    ) -> Result<(Did, Traversal), Error> {
+    ) -> Result<(Did, Resolver), Error> {
         let did = Did::from(did_components);
-        let traversal = Self::read(&did, resolution_options)?;
+        let resolver = Self::read(&did, resolution_options)?;
 
-        Ok((did, traversal))
+        Ok((did, resolver))
     }
 
     // Spec section 7.2
@@ -218,20 +218,18 @@ impl Document {
     // TODO: Sans-I/O: This needs to not bake any I/O into the implementation. Instead, this should
     // return a finite state machine that represents the protocol described in the spec. This allows
     // the caller to do their own I/O and drive the state machine forward to `Document` resolution.
-    pub fn read(did: &Did, resolution_options: ResolutionOptions) -> Result<Traversal, Error> {
+    pub fn read(did: &Did, resolution_options: ResolutionOptions) -> Result<Resolver, Error> {
         let initial_document = InitialDocument::from_did(did, &resolution_options)?;
 
-        Ok(Self::resolve(initial_document, &resolution_options))
+        Ok(Resolver::new(initial_document, resolution_options))
     }
 
     // Spec section 7.3
     //
-    // TODO: Sans-I/O.
-    //
     // TODO: Do we really want to expose this patching concept to users? How do they create patches?
     //
     // options:
-    // a) user provides DocumentPatch
+    // a) user provides Patch
     //
     // b) user provides second document and we compute the diff and patch
     //
@@ -245,28 +243,16 @@ impl Document {
         // `btc1Identifier` is implied by `self.did`
         // `sourceDocument` is implied by `self`
         // `sourceVersionId` is implied by `self.version`
-        _patch: DocumentPatch,
-        _verification_method_id: usize,
+        _patch: Patch,
+        _verification_method_id: &str,
         _beacon_ids: &[usize],
-    ) -> Result<Self, Error> {
+    ) -> Result<Resolver, Error> {
         todo!()
     }
 
     // Spec section 7.4
-    //
-    // TODO: Sans-I/O.
-    pub fn deactivate(&mut self) -> Result<Self, Error> {
+    pub fn deactivate(&mut self) -> Result<Resolver, Error> {
         todo!()
-    }
-
-    /// Spec section 7.2.2
-    fn resolve(
-        initial_document: InitialDocument,
-        resolution_options: &ResolutionOptions,
-    ) -> Traversal {
-        // TODO: We need a way to capture Spec section 7.2.2, step 6
-        // This will be resolved by identifying the expected default value for ResolutionOptions::version_id
-        Traversal::new(initial_document, resolution_options)
     }
 }
 
@@ -358,7 +344,7 @@ impl InitialDocument {
         doc: IntermediateDocument,
         version: Option<DidVersion>,
         network: Option<Network>,
-    ) -> Result<(Did, Self), Error> {
+    ) -> (Did, Self) {
         let hash = doc.hash();
 
         let id_type = IdType::External(hash);
@@ -367,15 +353,16 @@ impl InitialDocument {
             version.unwrap_or_default(),
             network.unwrap_or_default(),
             id_type,
-        )?
+        )
         .into();
 
         let initial_document = doc.into_initial(&did);
 
         // Step 9 is unimplemented (this is the caller's responsibility)
-        // Optionally store canonicalBytes on a Content Addressable Storage (CAS) system like the InterPlanetary File System (IPFS).
+        // Optionally store canonicalBytes on a Content Addressable Storage (CAS) system like the
+        // InterPlanetary File System (IPFS).
 
-        Ok((did, initial_document))
+        (did, initial_document)
     }
 
     // Spec section 7.2.1
@@ -488,7 +475,7 @@ impl InitialDocument {
         )?;
 
         // Step 11
-        patch(&mut self.json_data, &update.patch)
+        json_patch::patch(&mut self.json_data, &update.patch)
             .map_err(|_| Btc1Error::InvalidDidUpdate("Unable to apply JSON Patch".into()))?;
 
         // Step 12
@@ -623,7 +610,7 @@ fn generate_beacons(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blockchain::TraversalState;
+    use crate::resolver::ResolverState;
 
     impl Did {
         fn hash_unchecked(&self) -> Sha256Hash {
@@ -717,7 +704,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let did_components = DidComponents::new(DidVersion::One, Network::Signet, id_type).unwrap();
+        let did_components = DidComponents::new(DidVersion::One, Network::Signet, id_type);
 
         let resolution_options = ResolutionOptions::from_json_string(include_str!(concat!(
             "../test-suite/signet/k1qypa5tq86fzrl0ez32nh8e0ks4tzzkxnnmn8tdvxk04ahzt70u09dagl0mgs4",
@@ -725,7 +712,7 @@ mod tests {
         )));
 
         let (did, fsm) = Document::from_did_components(did_components, resolution_options).unwrap();
-        let TraversalState::Requests(next_state, requests) = fsm.traverse().unwrap() else {
+        let ResolverState::Requests(next_state, requests) = fsm.resolve().unwrap() else {
             unreachable!()
         };
 
@@ -748,7 +735,7 @@ mod tests {
         let transactions: HashMap<_, _> = serde_json::from_str(json).unwrap();
         let fsm = next_state.process_responses(transactions);
 
-        let TraversalState::Resolved(document) = fsm.traverse().unwrap() else {
+        let ResolverState::Resolved(document) = fsm.resolve().unwrap() else {
             unreachable!()
         };
         assert_eq!(document.fields.id.encode(), did.encode());
@@ -775,8 +762,7 @@ mod tests {
             intermediate_doc,
             None,
             Some(Network::Regtest),
-        )
-        .unwrap();
+        );
 
         let expected_did = include_str!(concat!(
             "../test-suite/regtest/x1qgcs38429dp7kyr5y90g3l94r6ky85pnppy9aggzgas2kdcldelrk3yfjrf",

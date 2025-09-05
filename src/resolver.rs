@@ -1,6 +1,6 @@
 use crate::beacon::BeaconType;
 use crate::canonical_hash::CanonicalHash as _;
-use crate::document::{Document, InitialDocument, ResolutionOptions, SignalsMetadata};
+use crate::document::{Document, InitialDocument, ResolutionOptions, SidecarData, SignalsMetadata};
 use crate::update::UnsecuredUpdate;
 use crate::{error::Btc1Error, identifier::Sha256Hash, update::Update};
 use chrono::{DateTime, Utc};
@@ -14,11 +14,6 @@ const DEFAULT_RPC_BASE_URL: &str = "https://blockstream.info/testnet/api";
 
 #[derive(Error, Debug)]
 pub enum Error {
-    /// FSM is waiting for RPC responses.
-    ///
-    /// This happens when the caller forgot to call [`Traversal::process_responses`].
-    WaitingForResponses,
-
     /// Sidecar data not found
     SidecarDataNotFound,
 
@@ -32,9 +27,9 @@ pub enum Error {
     Btc1Error(#[from] crate::error::Btc1Error),
 }
 
-/// State machine for Bitcoin blockchain traversal.
+/// State machine for Bitcoin blockchain resolver.
 #[derive(Debug)]
-pub struct Traversal<T = ()> {
+pub struct Resolver<T = ()> {
     contemporary_doc: InitialDocument,
     current_version_id: NonZeroU64,
     target_condition: TargetCondition,
@@ -44,81 +39,87 @@ pub struct Traversal<T = ()> {
     request_cache: HashSet<esploda::http::Uri>,
 
     // Finite State Machine
-    fsm: TraversalFsm,
+    fsm: ResolverFsm,
     _type_state: T,
 }
 
-impl Traversal {
-    pub(crate) fn new(
-        initial_doc: InitialDocument,
-        resolution_options: &ResolutionOptions,
-    ) -> Self {
-        let sidecar_data = resolution_options.sidecar_data.as_ref();
+impl Resolver {
+    // TODO: Why do you have `InitialDocument` here and in `resolution_options.sidecar_data`?
+    pub(crate) fn new(initial_doc: InitialDocument, resolution_options: ResolutionOptions) -> Self {
+        let target_condition = TargetCondition::from(&resolution_options);
+        let (signals_metadata, rpc_host) = match resolution_options.sidecar_data {
+            Some(SidecarData {
+                signals_metadata,
+                blockchain_rpc_uri,
+                ..
+            }) => (signals_metadata, blockchain_rpc_uri),
+            None => Default::default(),
+        };
 
         Self {
             contemporary_doc: initial_doc,
             current_version_id: 1.try_into().unwrap(),
-            target_condition: TargetCondition::from(resolution_options),
+            target_condition,
             update_hash_history: vec![],
-            signals_metadata: sidecar_data
-                .map(|data| data.signals_metadata.clone())
-                .unwrap_or_default(),
-            rpc_host: sidecar_data
-                .and_then(|data| data.blockchain_rpc_uri.as_deref())
-                .unwrap_or(DEFAULT_RPC_BASE_URL)
-                .to_string(),
+            signals_metadata,
+            rpc_host: rpc_host.unwrap_or_else(|| DEFAULT_RPC_BASE_URL.into()),
             request_cache: HashSet::new(),
-            fsm: TraversalFsm::Init,
+            fsm: ResolverFsm::Init,
             _type_state: (),
         }
     }
 
-    fn from_waiting_for_responses(traversal: Traversal<WaitingForResponses>) -> Self {
+    fn from_waiting_for_responses(resolver: Resolver<WaitingForResponses>) -> Self {
         Self {
-            contemporary_doc: traversal.contemporary_doc,
-            current_version_id: traversal.current_version_id,
-            target_condition: traversal.target_condition,
-            update_hash_history: traversal.update_hash_history,
-            signals_metadata: traversal.signals_metadata,
-            rpc_host: traversal.rpc_host,
-            request_cache: traversal.request_cache,
-            fsm: traversal.fsm,
+            contemporary_doc: resolver.contemporary_doc,
+            current_version_id: resolver.current_version_id,
+            target_condition: resolver.target_condition,
+            update_hash_history: resolver.update_hash_history,
+            signals_metadata: resolver.signals_metadata,
+            rpc_host: resolver.rpc_host,
+            request_cache: resolver.request_cache,
+            fsm: resolver.fsm,
             _type_state: (),
         }
     }
 
     // Spec section 7.2.2.1
     // TODO: Better name for this?
-    pub fn traverse(mut self) -> Result<TraversalState, Error> {
+    pub fn resolve(mut self) -> Result<ResolverState, Error> {
         // Take the FSM state, leaving the default in its place.
-        let mut fsm = TraversalFsm::Init;
+        let mut fsm = ResolverFsm::Init;
         std::mem::swap(&mut self.fsm, &mut fsm);
 
         match fsm {
-            TraversalFsm::Init => {
+            ResolverFsm::Init => {
+                // This captures Section 7.2.2, step 6.
+                if let TargetCondition::VersionId(version_id) = self.target_condition
+                    && version_id == self.current_version_id
+                {
+                    return Ok(ResolverState::Resolved(self.contemporary_doc.into()));
+                }
+
                 // Step 1 is deferred to step 10.
                 // Step 2, 3: unnecessary
 
                 // Step 4. (Create RPC requests)
-                self.fsm = TraversalFsm::Requests;
-
                 Ok(self.next_signals_requests())
             }
 
-            TraversalFsm::FindNextSignals(responses) => {
+            ResolverFsm::FindNextSignals(responses) => {
                 // Step 4. (Assignment)
                 let next_signals = self.find_next_signals(responses);
 
                 // Step 5.
                 if next_signals.is_empty() {
-                    return Ok(TraversalState::Resolved(self.contemporary_doc.into()));
+                    return Ok(ResolverState::Resolved(self.contemporary_doc.into()));
                 }
 
                 // Step 6.
                 if let TargetCondition::Time(time) = &self.target_condition
                     && &next_signals[0].block_time > time
                 {
-                    return Ok(TraversalState::Resolved(self.contemporary_doc.into()));
+                    return Ok(ResolverState::Resolved(self.contemporary_doc.into()));
                 }
 
                 // Step 7: unnecessary
@@ -160,11 +161,11 @@ impl Traversal {
                         self.current_version_id = next_update_version_id;
 
                         // Step 13.
-                        // Yes, we need to do 13 here: there is a bug in the spec.
+                        // Yes, we need to do 13 here: the spec does not early exit.
                         if let TargetCondition::VersionId(version_id) = self.target_condition
                             && version_id == self.current_version_id
                         {
-                            return Ok(TraversalState::Resolved(self.contemporary_doc.into()));
+                            return Ok(ResolverState::Resolved(self.contemporary_doc.into()));
                         }
 
                         // Step 10.2.5 - 10.2.6.
@@ -186,78 +187,85 @@ impl Traversal {
                 // Step 11: unnecessary
 
                 // Step 12.
-                let TraversalState::Requests(fsm, signals) = self.next_signals_requests() else {
+                let ResolverState::Requests(fsm, signals) = self.next_signals_requests() else {
                     unreachable!()
                 };
                 if signals.is_empty() {
-                    Ok(TraversalState::Resolved(fsm.contemporary_doc.into()))
+                    Ok(ResolverState::Resolved(fsm.contemporary_doc.into()))
                 } else {
-                    Ok(TraversalState::Requests(fsm, signals))
+                    Ok(ResolverState::Requests(fsm, signals))
                 }
             }
-
-            TraversalFsm::Requests => Err(Error::WaitingForResponses),
         }
     }
 
     // Spec section 7.2.2.2
     fn find_next_signals(
         &self,
-        mut transactions: HashMap<BeaconType, Vec<Transaction>>,
+        transactions: HashMap<BeaconType, Vec<Transaction>>,
     ) -> Vec<NextSignal> {
-        // todo: we need to deal with other two BeaconTypes
-        let entry = transactions.entry(BeaconType::Singleton).or_default();
-        entry
+        transactions
             .into_iter()
-            .filter_map(|tx| {
-                let txout = tx.outputs.last().unwrap();
-                let ops = txout
-                    .script_pubkey
-                    .instructions()
-                    .flatten()
-                    .collect::<Vec<_>>();
+            .flat_map(|(beacon_type, transactions)| {
+                transactions.into_iter().filter_map(move |tx| {
+                    let txout = tx.outputs.last().unwrap();
+                    let ops = txout
+                        .script_pubkey
+                        .instructions()
+                        .flatten()
+                        .collect::<Vec<_>>();
 
-                // Extract the signal bytes
-                let [Instruction::Op(OP_RETURN), Instruction::PushBytes(bytes)] = ops[..] else {
-                    return None;
-                };
-                let signal_bytes = Sha256Hash(bytes.as_bytes().try_into().ok()?);
+                    // Extract the signal bytes
+                    let [Instruction::Op(OP_RETURN), Instruction::PushBytes(bytes)] = ops[..]
+                    else {
+                        return None;
+                    };
+                    let signal_bytes = Sha256Hash(bytes.as_bytes().try_into().ok()?);
 
-                let block_time = match tx.status {
-                    Status::Unconfirmed => todo!("Unconfirmed transactions are not supported yet"),
-                    Status::Confirmed { block_time, .. } => block_time,
-                };
+                    let block_time = match tx.status {
+                        Status::Unconfirmed => {
+                            todo!("Unconfirmed transactions are not supported yet")
+                        }
+                        Status::Confirmed { block_time, .. } => block_time,
+                    };
 
-                Some(NextSignal {
-                    beacon_type: BeaconType::Singleton,
-                    txid: tx.txid,
-                    signal_bytes,
-                    block_time,
+                    Some(NextSignal {
+                        beacon_type,
+                        txid: tx.txid,
+                        signal_bytes,
+                        block_time,
+                    })
                 })
             })
             .collect()
     }
 
-    fn next_signals_requests(mut self) -> TraversalState {
+    fn next_signals_requests(mut self) -> ResolverState {
         let mut map: HashMap<_, Vec<_>> = HashMap::new();
 
         for beacon in &self.contemporary_doc.fields.service {
-            // TODO: Move this to Esploda
-            let req = esploda::Req::builder()
-                .uri(format!(
-                    "{}/address/{}/txs",
-                    self.rpc_host, beacon.descriptor
-                ))
-                .body(())
-                .unwrap();
+            match beacon.ty {
+                BeaconType::Singleton => {
+                    // TODO: Move this to Esploda
+                    let req = esploda::Req::builder()
+                        .uri(format!(
+                            "{}/address/{}/txs",
+                            self.rpc_host, beacon.descriptor,
+                        ))
+                        .body(())
+                        .unwrap();
 
-            if !self.request_cache.contains(req.uri()) {
-                self.request_cache.insert(req.uri().clone());
-                map.entry(beacon.ty).or_default().push(req);
+                    if !self.request_cache.contains(req.uri()) {
+                        self.request_cache.insert(req.uri().clone());
+                        map.entry(beacon.ty).or_default().push(req);
+                    }
+                }
+                BeaconType::Map => todo!(),
+                BeaconType::SparseMerkleTree => todo!(),
             }
         }
 
-        TraversalState::Requests(Traversal::from_init(self), map)
+        ResolverState::Requests(Resolver::from_init(self), map)
     }
 
     // Spec section 7.2.2.3
@@ -302,17 +310,17 @@ impl Traversal {
     }
 }
 
-impl Traversal<WaitingForResponses> {
-    fn from_init(traversal: Traversal) -> Self {
+impl Resolver<WaitingForResponses> {
+    fn from_init(resolver: Resolver) -> Self {
         Self {
-            contemporary_doc: traversal.contemporary_doc,
-            current_version_id: traversal.current_version_id,
-            target_condition: traversal.target_condition,
-            update_hash_history: traversal.update_hash_history,
-            signals_metadata: traversal.signals_metadata,
-            rpc_host: traversal.rpc_host,
-            request_cache: traversal.request_cache,
-            fsm: traversal.fsm,
+            contemporary_doc: resolver.contemporary_doc,
+            current_version_id: resolver.current_version_id,
+            target_condition: resolver.target_condition,
+            update_hash_history: resolver.update_hash_history,
+            signals_metadata: resolver.signals_metadata,
+            rpc_host: resolver.rpc_host,
+            request_cache: resolver.request_cache,
+            fsm: resolver.fsm,
             _type_state: WaitingForResponses,
         }
     }
@@ -320,10 +328,10 @@ impl Traversal<WaitingForResponses> {
     pub fn process_responses(
         mut self,
         transactions: HashMap<BeaconType, Vec<Transaction>>,
-    ) -> Traversal {
-        self.fsm = TraversalFsm::FindNextSignals(transactions);
+    ) -> Resolver {
+        self.fsm = ResolverFsm::FindNextSignals(transactions);
 
-        Traversal::from_waiting_for_responses(self)
+        Resolver::from_waiting_for_responses(self)
     }
 }
 
@@ -332,12 +340,9 @@ impl Traversal<WaitingForResponses> {
 pub struct WaitingForResponses;
 
 #[derive(Debug)]
-enum TraversalFsm {
+enum ResolverFsm {
     /// FSM just initialized.
     Init,
-
-    /// FSM is waiting for requests to be processed.
-    Requests,
 
     /// FSM is ready to find the next beacon signals.
     FindNextSignals(HashMap<BeaconType, Vec<Transaction>>),
@@ -345,10 +350,10 @@ enum TraversalFsm {
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
-pub enum TraversalState {
+pub enum ResolverState {
     /// Requests need to be sent to the blockchain.
     Requests(
-        Traversal<WaitingForResponses>,
+        Resolver<WaitingForResponses>,
         HashMap<BeaconType, Vec<esploda::Req>>,
     ),
 
@@ -398,8 +403,8 @@ mod tests {
             "/resolutionOptions.json",
         )));
 
-        let fsm = Traversal::new(initial_document, &resolution_options);
-        let TraversalState::Requests(next_state, requests) = fsm.traverse().unwrap() else {
+        let fsm = Resolver::new(initial_document, resolution_options);
+        let ResolverState::Requests(next_state, requests) = fsm.resolve().unwrap() else {
             unreachable!()
         };
 
@@ -422,7 +427,7 @@ mod tests {
         let transactions: HashMap<_, _> = serde_json::from_str(json).unwrap();
         let fsm = next_state.process_responses(transactions.clone());
 
-        let TraversalState::Requests(next_state, requests) = fsm.traverse().unwrap() else {
+        let ResolverState::Requests(next_state, requests) = fsm.resolve().unwrap() else {
             unreachable!()
         };
 
@@ -439,7 +444,7 @@ mod tests {
 
         let fsm = next_state.process_responses(transactions);
 
-        let TraversalState::Resolved(document) = fsm.traverse().unwrap() else {
+        let ResolverState::Resolved(document) = fsm.resolve().unwrap() else {
             unreachable!()
         };
 

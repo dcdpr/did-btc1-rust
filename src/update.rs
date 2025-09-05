@@ -16,10 +16,6 @@ pub enum Error {
     /// JSON value parse error
     JsonValue(#[from] json_tools::JsonError),
 
-    /// Invalid SHA256 hash
-    #[error("Invalid SHA256 hash: {0}")]
-    InvalidHash(&'static str),
-
     /// Invalid targetVersionId
     InvalidTargetVersionId,
 }
@@ -51,13 +47,15 @@ impl Update {
     pub fn from_json_value(json: Value) -> Result<Self, Error> {
         use json_tools::*;
 
+        // TODO: Can we replace this with serde?
         let source_hash = hash_from_object(&json, "sourceHash")?;
         let target_hash = hash_from_object(&json, "targetHash")?;
         let target_version_id = u64::try_from(int_from_object(&json, "targetVersionId")?)
             .map_err(|_| Error::InvalidTargetVersionId)?
             .try_into()
             .map_err(|_| Error::InvalidTargetVersionId)?;
-        // TODO: Check whether "proof" exists as a key.
+        // TODO: Check whether "proof" and "path" exists as a key.
+        // TODO: Remove these clones
         let proof = serde_json::from_value(json["proof"].clone())?;
         let patch = serde_json::from_value(json["patch"].clone())?;
 
@@ -119,5 +117,3 @@ impl AsRef<Value> for UnsecuredUpdate {
 }
 
 impl CanonicalHash for UnsecuredUpdate {}
-
-pub struct DocumentPatch;
