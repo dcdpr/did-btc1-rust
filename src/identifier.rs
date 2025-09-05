@@ -335,12 +335,12 @@ pub struct DidComponents {
 
 impl DidComponents {
     /// Create new DID components with validation
-    pub fn new(version: DidVersion, network: Network, id_type: IdType) -> Result<Self, Error> {
-        Ok(Self {
+    pub fn new(version: DidVersion, network: Network, id_type: IdType) -> Self {
+        Self {
             version,
             network,
             id_type,
-        })
+        }
     }
 
     pub fn version(&self) -> DidVersion {
@@ -408,7 +408,7 @@ pub fn parse_did_identifier(did: &str) -> Result<DidComponents, Error> {
     let network = Network::try_from(network_nibble)?;
 
     // Create and validate components
-    DidComponents::new(version.try_into()?, network, id_type)
+    Ok(DidComponents::new(version.try_into()?, network, id_type))
 }
 
 /// Encode DID components into a DID:BTC1 identifier string

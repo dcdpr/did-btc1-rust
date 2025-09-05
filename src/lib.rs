@@ -1,9 +1,9 @@
 pub mod beacon;
-pub mod blockchain;
 pub mod document;
 pub mod error;
 pub mod identifier;
 pub mod key;
+pub mod resolver;
 pub mod verification;
 
 mod canonical_hash;
