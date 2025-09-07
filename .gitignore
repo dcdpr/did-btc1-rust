@@ -6,3 +6,9 @@ target/
 # Emacs droppings
 *~
 
+# diagrams
+*.svg
+
+# databases
+*.sled/
+*.rocksdb/
