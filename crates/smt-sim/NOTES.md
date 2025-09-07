@@ -51,7 +51,7 @@ rocksdb DB dir size on macos:
 
 # Jay (Batched)
 
-## Machine: Windows, 24-core AMD 5900X, 32 GB RAM
+## Machine: Windows 11, 24-core AMD 5900X, 32 GB RAM
 
 Created `./db/smt-sim-1.sled` in 23.811ms
 Created `./db/smt-sim-5.sled` in 14.8321ms
@@ -85,6 +85,45 @@ Created `./db/smt-sim-100K.rocksdb` in 3.3310485s
 50K     ./db/smt-sim-5.rocksdb
 50K     ./db/smt-sim-10.rocksdb
 114K    ./db/smt-sim-100.rocksdb
+1.1M    ./db/smt-sim-1K.rocksdb
+14M     ./db/smt-sim-10K.rocksdb
+80M     ./db/smt-sim-50K.rocksdb
+170M    ./db/smt-sim-100K.rocksdb
+
+
+## Machine: Windows 11 (WSL2, Ubuntu 24.10), 24-core AMD 5900X, 32 GB RAM
+
+Created `./db/smt-sim-1.sled` in 19.911716ms
+Created `./db/smt-sim-5.sled` in 7.881412ms
+Created `./db/smt-sim-10.sled` in 13.489239ms
+Created `./db/smt-sim-100.sled` in 12.2817ms
+Created `./db/smt-sim-1K.sled` in 52.332779ms
+Created `./db/smt-sim-10K.sled` in 1.002925255s
+Created `./db/smt-sim-50K.sled` in 6.71556806s
+Created `./db/smt-sim-100K.sled` in 15.707732555s
+
+16K     ./db/smt-sim-1.sled
+16K     ./db/smt-sim-5.sled
+20K     ./db/smt-sim-10.sled
+192K    ./db/smt-sim-100.sled
+3.1M    ./db/smt-sim-1K.sled
+44M     ./db/smt-sim-10K.sled
+272M    ./db/smt-sim-50K.sled
+586M    ./db/smt-sim-100K.sled
+
+Created `./db/smt-sim-1.rocksdb` in 359.482388ms
+Created `./db/smt-sim-5.rocksdb` in 126.622598ms
+Created `./db/smt-sim-10.rocksdb` in 53.083762ms
+Created `./db/smt-sim-100.rocksdb` in 59.509514ms
+Created `./db/smt-sim-1K.rocksdb` in 69.346045ms
+Created `./db/smt-sim-10K.rocksdb` in 275.969806ms
+Created `./db/smt-sim-50K.rocksdb` in 1.838217385s
+Created `./db/smt-sim-100K.rocksdb` in 4.454523764s
+
+60K     ./db/smt-sim-1.rocksdb
+56K     ./db/smt-sim-5.rocksdb
+56K     ./db/smt-sim-10.rocksdb
+120K    ./db/smt-sim-100.rocksdb
 1.1M    ./db/smt-sim-1K.rocksdb
 14M     ./db/smt-sim-10K.rocksdb
 80M     ./db/smt-sim-50K.rocksdb
