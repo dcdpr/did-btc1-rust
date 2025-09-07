@@ -1,11 +1,11 @@
 use monotree::database::{rocksdb::RocksDB, sled::Sled};
 use monotree::{Database, Hash, Monotree, hasher::Sha2, utils::random_hash};
-use std::{fmt::Write as _, time::Instant};
+use std::{fmt::Write as _, process::Command, time::Instant};
 
 fn main() {
-    // // Run all the benchmarks
-    // benchmark::<RocksDB>();
-    // benchmark::<Sled>();
+    // Run all the benchmarks
+    benchmark::<Sled>();
+    benchmark::<RocksDB>();
 
     // Run the proof creator/printer
     create_proof();
@@ -13,7 +13,7 @@ fn main() {
 
 #[allow(dead_code)]
 fn create_proof() {
-    let (mut monotree, root) = smt_demo::<RocksDB>("./smt-sim.rocksdb", 10_000);
+    let (mut monotree, root) = smt_demo::<RocksDB>("./db/smt-sim.rocksdb", 10_000);
 
     let key = random_hash();
     let leaf = random_hash();
@@ -67,8 +67,14 @@ fn benchmark<T: Database + DatabaseExt>() {
     // 1 million is way too much
     // (the example with RocksDB takes 183 seconds to run on J's machine - AMD 5900x)
     // (the example with RocksDB takes 72 seconds to run on D's machine - Apple M3, 2024)
-    for size in [1, 5, 10, 100, 1_000, 10_000, 100_000, 1_000_000] {
-        let dbpath = format!("./smt-sim-{}.{}", human_size(size), T::db_name());
+    let sizes = [1, 5, 10, 100, 1_000, 10_000, 50_000, 100_000];
+
+    for size in sizes {
+        let dbpath = format!("./db/smt-sim-{}.{}", human_size(size), T::db_name());
+
+        // Remove old DB (if any)
+        Command::new("rm").args(["-rf", &dbpath]).output().unwrap();
+
         let start = Instant::now();
 
         smt_demo::<T>(&dbpath, size);
@@ -78,6 +84,18 @@ fn benchmark<T: Database + DatabaseExt>() {
             Instant::now().duration_since(start),
         );
     }
+
+    println!();
+
+    for size in sizes {
+        let dbpath = format!("./db/smt-sim-{}.{}", human_size(size), T::db_name());
+
+        // Get the DB's size on disk
+        let db_size = Command::new("du").args(["-hs", &dbpath]).output().unwrap();
+        println!("{}", String::from_utf8_lossy(&db_size.stdout).trim());
+    }
+
+    println!();
 }
 
 fn smt_demo<T: Database>(dbpath: &str, cohort_size: u64) -> (Monotree<T, Sha2>, Hash) {

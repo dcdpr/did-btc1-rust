@@ -10,5 +10,6 @@ target/
 *.svg
 
 # databases
+db/
 *.sled/
 *.rocksdb/
