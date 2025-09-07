@@ -89,3 +89,42 @@ Created `./db/smt-sim-100K.rocksdb` in 3.3310485s
 14M     ./db/smt-sim-10K.rocksdb
 80M     ./db/smt-sim-50K.rocksdb
 170M    ./db/smt-sim-100K.rocksdb
+
+
+## Machine: macOS, 16-core M3 MAX (2023), 64 GB RAM
+
+Created `./db/smt-sim-1.sled` in 30.865292ms
+Created `./db/smt-sim-5.sled` in 21.206333ms
+Created `./db/smt-sim-10.sled` in 13.619583ms
+Created `./db/smt-sim-100.sled` in 14.676458ms
+Created `./db/smt-sim-1K.sled` in 42.435291ms
+Created `./db/smt-sim-10K.sled` in 455.511083ms
+Created `./db/smt-sim-50K.sled` in 3.001970458s
+Created `./db/smt-sim-100K.sled` in 7.497818s
+
+8.0K    ./db/smt-sim-1.sled
+8.0K    ./db/smt-sim-5.sled
+12K     ./db/smt-sim-10.sled
+176K    ./db/smt-sim-100.sled
+3.0M    ./db/smt-sim-1K.sled
+44M     ./db/smt-sim-10K.sled
+273M    ./db/smt-sim-50K.sled
+593M    ./db/smt-sim-100K.sled
+
+Created `./db/smt-sim-1.rocksdb` in 3.483709ms
+Created `./db/smt-sim-5.rocksdb` in 1.785083ms
+Created `./db/smt-sim-10.rocksdb` in 1.616625ms
+Created `./db/smt-sim-100.rocksdb` in 2.151167ms
+Created `./db/smt-sim-1K.rocksdb` in 10.6365ms
+Created `./db/smt-sim-10K.rocksdb` in 133.373667ms
+Created `./db/smt-sim-50K.rocksdb` in 1.005048083s
+Created `./db/smt-sim-100K.rocksdb` in 2.647476125s
+
+60K     ./db/smt-sim-1.rocksdb
+56K     ./db/smt-sim-5.rocksdb
+56K     ./db/smt-sim-10.rocksdb
+124K    ./db/smt-sim-100.rocksdb
+1.1M    ./db/smt-sim-1K.rocksdb
+14M     ./db/smt-sim-10K.rocksdb
+80M     ./db/smt-sim-50K.rocksdb
+177M    ./db/smt-sim-100K.rocksdb
