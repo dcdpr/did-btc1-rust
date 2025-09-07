@@ -7,3 +7,4 @@ edition = "2024"
 hex = "0.4"
 monotree = { version = "0.4", features = ["db_rocksdb", "db_sled"] }
 plotters = "0.3"
+rand = "0.8"

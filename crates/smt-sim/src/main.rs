@@ -1,17 +1,44 @@
 use monotree::database::{rocksdb::RocksDB, sled::Sled};
-use monotree::{Database, Hash, Monotree, hasher::Sha2, utils::random_hash};
-use std::{fmt::Write as _, process::Command, time::Instant};
+use monotree::{Database, Hash, Monotree, hasher::Sha2};
+use rand::Rng;
+use rand::{SeedableRng as _, rngs::StdRng};
+use std::{cell::RefCell, fmt::Write as _, process::Command, time::Instant};
 
-fn main() {
-    // Run all the benchmarks
-    benchmark::<Sled>();
-    benchmark::<RocksDB>();
+const DEFAULT_PRNG_SEED: [u8; 32] = [
+    // echo -n 'https://xkcd.com/221/' | sha256sum
+    0x62, 0xbe, 0xf7, 0x04, 0x85, 0xaf, 0x17, 0x10, 0x26, 0x53, 0x68, 0xee, 0x4d, 0x89, 0x11, 0x22,
+    0x8a, 0xc6, 0x3c, 0x93, 0x62, 0x83, 0xa4, 0x19, 0x59, 0x1e, 0xc9, 0x37, 0xb6, 0x79, 0x88, 0xef,
+];
 
-    // Run the proof creator/printer
-    create_proof();
+thread_local! {
+    /// Deterministic PRNG seeded with an arbitrarily chosen SHA-256 hash.
+    ///
+    /// Because it's thread-local, multiple threads will not be able to deterministically share the
+    /// PRNG state.
+    static PRNG: RefCell<StdRng> = RefCell::new(StdRng::from_seed(DEFAULT_PRNG_SEED));
 }
 
-#[allow(dead_code)]
+/// Re-implement [`monotree::utils::random_hash`] with a deterministic PRNG.
+fn random_hash() -> Hash {
+    PRNG.with(|prng| prng.borrow_mut().r#gen())
+}
+
+/// Re-seed the PRNG with its default settings.
+fn reseed_prng() {
+    PRNG.with(|prng| prng.replace(StdRng::from_seed(DEFAULT_PRNG_SEED)));
+}
+
+fn main() {
+    // Run the proof creator/printer
+    create_proof();
+
+    // Run all the benchmarks
+    if std::env::args().nth(1) == Some("--bench".to_string()) {
+        benchmark::<Sled>();
+        benchmark::<RocksDB>();
+    }
+}
+
 fn create_proof() {
     let (mut monotree, root) = smt_demo::<RocksDB>("./db/smt-sim.rocksdb", 10_000);
 
@@ -62,8 +89,9 @@ impl DatabaseExt for Sled {
     }
 }
 
-#[allow(dead_code)]
 fn benchmark<T: Database + DatabaseExt>() {
+    reseed_prng();
+
     // 1 million is way too much
     // (the example with RocksDB takes 183 seconds to run on J's machine - AMD 5900x)
     // (the example with RocksDB takes 72 seconds to run on D's machine - Apple M3, 2024)
