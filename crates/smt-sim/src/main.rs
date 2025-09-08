@@ -1,8 +1,9 @@
-use monotree::database::{rocksdb::RocksDB, sled::Sled};
-use monotree::{Database, Hash, Monotree, hasher::Sha2};
-use rand::Rng;
-use rand::{SeedableRng as _, rngs::StdRng};
+use crate::smt::{Smt, SmtRocks, SmtSled, SmtSqlite};
+use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
+use smt::Hash;
 use std::{cell::RefCell, fmt::Write as _, process::Command, time::Instant};
+
+mod smt;
 
 const DEFAULT_PRNG_SEED: [u8; 32] = [
     // echo -n 'https://xkcd.com/221/' | sha256sum
@@ -34,24 +35,30 @@ fn main() {
 
     // Run all the benchmarks
     if std::env::args().nth(1) == Some("--bench".to_string()) {
-        benchmark::<Sled>();
-        benchmark::<RocksDB>();
+        benchmark::<SmtSqlite>();
+        benchmark::<SmtRocks>();
+        benchmark::<SmtSled>();
     }
 }
 
 fn create_proof() {
-    let (mut monotree, root) = smt_demo::<RocksDB>("./db/smt-sim.rocksdb", 10_000);
+    reseed_prng();
+
+    let db_path = "./db/smt-sim.sqlite";
+
+    // Remove old DB (if any)
+    Command::new("rm").args(["-rf", db_path]).output().unwrap();
+
+    let (smt, root) = smt_demo::<SmtRocks>(db_path, 10_000);
 
     let key = random_hash();
     let leaf = random_hash();
-    let root = monotree.insert(Some(&root), &key, &leaf).unwrap();
+    let root = smt.insert(Some(&root), &key, &leaf).unwrap();
 
-    let proof = monotree
-        .get_merkle_proof(root.as_ref(), &key)
-        .unwrap()
-        .unwrap();
+    let proof = smt.get_proof(root.as_ref(), &key).unwrap().unwrap();
 
     println!("key: {}", hex::encode(key));
+    println!("leaf: {}", hex::encode(leaf));
     println!("proof: {}", print_proof(&proof));
 }
 
@@ -73,23 +80,11 @@ fn print_proof(proof: &[(bool, Vec<u8>)]) -> String {
     pretty
 }
 
-trait DatabaseExt {
-    fn db_name() -> &'static str;
-}
-
-impl DatabaseExt for RocksDB {
-    fn db_name() -> &'static str {
-        "rocksdb"
-    }
-}
-
-impl DatabaseExt for Sled {
-    fn db_name() -> &'static str {
-        "sled"
-    }
-}
-
-fn benchmark<T: Database + DatabaseExt>() {
+fn benchmark<T>()
+where
+    T: Smt,
+    <T as Smt>::Error: std::fmt::Debug,
+{
     reseed_prng();
 
     // 1 million is way too much
@@ -98,17 +93,17 @@ fn benchmark<T: Database + DatabaseExt>() {
     let sizes = [1, 5, 10, 100, 1_000, 10_000, 50_000, 100_000];
 
     for size in sizes {
-        let dbpath = format!("./db/smt-sim-{}.{}", human_size(size), T::db_name());
+        let db_path = format!("./db/smt-sim-{}.{}", human_size(size), T::EXT);
 
         // Remove old DB (if any)
-        Command::new("rm").args(["-rf", &dbpath]).output().unwrap();
+        Command::new("rm").args(["-rf", &db_path]).output().unwrap();
 
         let start = Instant::now();
 
-        smt_demo::<T>(&dbpath, size);
+        smt_demo::<T>(&db_path, size);
 
         println!(
-            "Created `{dbpath}` in {:?}",
+            "Created `{db_path}` in {:?}",
             Instant::now().duration_since(start),
         );
     }
@@ -116,7 +111,7 @@ fn benchmark<T: Database + DatabaseExt>() {
     println!();
 
     for size in sizes {
-        let dbpath = format!("./db/smt-sim-{}.{}", human_size(size), T::db_name());
+        let dbpath = format!("./db/smt-sim-{}.{}", human_size(size), T::EXT);
 
         // Get the DB's size on disk
         let db_size = Command::new("du").args(["-hs", &dbpath]).output().unwrap();
@@ -126,19 +121,23 @@ fn benchmark<T: Database + DatabaseExt>() {
     println!();
 }
 
-fn smt_demo<T: Database>(dbpath: &str, cohort_size: u64) -> (Monotree<T, Sha2>, Hash) {
-    let mut monotree = Monotree::<T, Sha2>::new(dbpath);
+fn smt_demo<T>(db_path: &str, cohort_size: u64) -> (T, Hash)
+where
+    T: Smt,
+    <T as Smt>::Error: std::fmt::Debug,
+{
+    let smt = T::new(db_path).unwrap();
     let mut root = None;
 
-    monotree.prepare();
+    smt.prepare();
     for _ in 0..cohort_size {
         let key = random_hash();
         let leaf = random_hash();
-        root = monotree.insert(root.as_ref(), &key, &leaf).unwrap();
+        root = smt.insert(root.as_ref(), &key, &leaf).unwrap();
     }
-    monotree.commit();
+    smt.commit();
 
-    (monotree, root.unwrap())
+    (smt, root.unwrap())
 }
 
 fn human_size(size: u64) -> String {

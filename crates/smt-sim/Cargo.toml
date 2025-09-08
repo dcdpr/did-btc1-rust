@@ -6,5 +6,8 @@ edition = "2024"
 [dependencies]
 hex = "0.4"
 monotree = { version = "0.4", features = ["db_rocksdb", "db_sled"] }
+onlyerror = "0.1.5"
 plotters = "0.3"
 rand = "0.8"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+sha2 = "0.10.9"
