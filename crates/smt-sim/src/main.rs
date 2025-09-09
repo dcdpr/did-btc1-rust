@@ -1,4 +1,4 @@
-use crate::smt::{Smt, SmtRocks, SmtSled, SmtSqlite, hash_concat};
+use crate::smt::{Smt, SmtNih, SmtRocks, SmtSled, SmtSqlite, hash_concat};
 use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 use smt::Hash;
 use std::{cell::RefCell, fmt::Write as _, process::Command, time::Instant};
@@ -35,6 +35,7 @@ fn main() {
 
     // Run all the benchmarks
     if std::env::args().nth(1) == Some("--bench".to_string()) {
+        benchmark::<SmtNih>();
         benchmark::<SmtSqlite>();
         benchmark::<SmtRocks>();
         benchmark::<SmtSled>();
@@ -50,32 +51,36 @@ fn create_proof() {
     Command::new("rm").args(["-rf", db_path]).output().unwrap();
 
     let total_nodes = 32;
-    println!("Inserting and verifying proofs for {total_nodes} nodes...");
+    let with_diagrams = false;
+    println!(
+        "Inserting and verifying proofs for {total_nodes} nodes{}...",
+        if with_diagrams { " with diagrams" } else { "" },
+    );
 
-    let (smt, root, kv_pairs) = smt_demo::<SmtSqlite>(db_path, total_nodes);
-    // let (smt, root, kv_pairs) = smt_demo_with_diagrams(db_path, total_nodes);
+    let (smt, root, kv_pairs) = smt_demo::<SmtNih>(db_path, total_nodes, with_diagrams);
 
     println!("root: {}", hex::encode(root));
     println!();
 
     for (key, value) in kv_pairs {
-        let leaf = hash_concat(&key, &value);
-
-        let proof = smt.get_proof(Some(&root), &key).unwrap().unwrap();
+        let proof = smt.get_proof(&root, &key).unwrap();
 
         println!("key: {}", hex::encode(key));
         println!("value: {}", hex::encode(value));
-        println!("leaf: {}", hex::encode(leaf));
+        println!("leaf: {}", hex::encode(hash_concat(&key, &value)));
         println!("proof: {proof}");
         // println!("proof: {}", print_proof(&proof)); // for monotree
-
-        std::fs::write("smt.mmd", smt.render(&root).unwrap()).unwrap();
 
         proof.verify(&root, &key, &value).unwrap();
         println!();
     }
 
+    if let Some(diagram) = smt.render(&root) {
+        std::fs::write("smt.mmd", diagram).unwrap();
+    }
+
     println!("All proofs verified!");
+    println!();
 }
 
 #[allow(dead_code)]
@@ -104,10 +109,13 @@ where
 {
     reseed_prng();
 
-    // 1 million is way too much
-    // (the example with RocksDB takes 183 seconds to run on J's machine - AMD 5900x)
-    // (the example with RocksDB takes 72 seconds to run on D's machine - Apple M3, 2024)
+    // 1 million is effectively beyond the limit for practical purposes. We should include it when
+    // running the full benchmark, allowing backends to fail (e.g. don't unwrap, impose timeouts,
+    // etc.) It will leave blank spaces in the sequence data for the diagrams. But that's ok.
+    //
+    // TODO: Is there a nice way to indicate error conditions in diagrams?
     let sizes = [1, 5, 10, 100, 1_000, 10_000, 50_000, 100_000];
+    // let sizes = [1, 5, 10, 100, 1_000, 10_000, 50_000, 100_000, 1_000_000];
 
     for size in sizes {
         let db_path = format!("./db/smt-sim-{}.{}", human_size(size), T::EXT);
@@ -117,7 +125,7 @@ where
 
         let start = Instant::now();
 
-        smt_demo::<T>(&db_path, size);
+        smt_demo::<T>(&db_path, size, false);
 
         println!(
             "Created `{db_path}` in {:?}",
@@ -138,32 +146,14 @@ where
     println!();
 }
 
-fn smt_demo<T>(db_path: &str, cohort_size: u64) -> (T, Hash, Vec<(Hash, Hash)>)
+fn smt_demo<T>(db_path: &str, cohort_size: usize, diagrams: bool) -> (T, Hash, Vec<(Hash, Hash)>)
 where
     T: Smt,
     <T as Smt>::Error: std::fmt::Debug,
 {
     let smt = T::new(db_path).unwrap();
     let mut root = None;
-    let mut kv_pairs = Vec::with_capacity(cohort_size.try_into().unwrap());
-
-    smt.prepare();
-    for _ in 0..cohort_size {
-        let key = random_hash();
-        let value = random_hash();
-        root = smt.insert(root.as_ref(), &key, &value).unwrap();
-        kv_pairs.push((key, value));
-    }
-    smt.commit();
-
-    (smt, root.unwrap(), kv_pairs)
-}
-
-#[allow(dead_code)]
-fn smt_demo_with_diagrams(db_path: &str, cohort_size: u64) -> (SmtSqlite, Hash, Vec<(Hash, Hash)>) {
-    let smt = SmtSqlite::new(db_path).unwrap();
-    let mut root = None;
-    let mut kv_pairs = Vec::with_capacity(cohort_size.try_into().unwrap());
+    let mut kv_pairs = Vec::with_capacity(cohort_size);
 
     smt.prepare();
     for i in 0..cohort_size {
@@ -172,14 +162,16 @@ fn smt_demo_with_diagrams(db_path: &str, cohort_size: u64) -> (SmtSqlite, Hash, 
         root = smt.insert(root.as_ref(), &key, &value).unwrap();
         kv_pairs.push((key, value));
 
-        std::fs::write(format!("smt.{i}.mmd"), smt.render(&root.unwrap()).unwrap()).unwrap();
+        if diagrams && let Some(diagram) = smt.render(&root.unwrap()) {
+            std::fs::write(format!("smt.{i}.mmd"), diagram).unwrap();
+        }
     }
     smt.commit();
 
     (smt, root.unwrap(), kv_pairs)
 }
 
-fn human_size(size: u64) -> String {
+fn human_size(size: usize) -> String {
     match size {
         0..1_000 => format!("{size}"),
         1_000..1_000_000 => format!("{}K", size / 1_000),

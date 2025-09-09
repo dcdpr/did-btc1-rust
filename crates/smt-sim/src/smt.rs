@@ -1,10 +1,12 @@
-pub use self::sqlite::{SmtSqlite, hash_concat};
+pub use self::{nih::SmtNih, sqlite::SmtSqlite, tree::hash_concat};
 pub use monotree::Hash;
 use monotree::database::{rocksdb::RocksDB, sled::Sled};
 use monotree::{Monotree, hasher::Sha2};
 use std::cell::RefCell;
 
+mod nih;
 mod sqlite;
+mod tree;
 
 pub struct SmtRocks(RefCell<Monotree<RocksDB, Sha2>>);
 pub struct SmtSled(RefCell<Monotree<Sled, Sha2>>);
@@ -14,14 +16,20 @@ pub trait Smt {
     type Proof;
     type Error;
 
+    /// Create a new Sparse Merkle Tree.
     fn new(db_path: &str) -> Result<Self, Self::Error>
     where
         Self: Sized;
 
+    /// Create a transaction.
+    ///
+    /// All write operations will be batched until committed with [`Self::commit`].
     fn prepare(&self);
 
+    /// Commit the transaction. Writes all pending data to disk.
     fn commit(&self);
 
+    /// Insert a key-value pair into the tree at the given root (if any).
     fn insert(
         &self,
         root: Option<&Hash>,
@@ -29,11 +37,16 @@ pub trait Smt {
         value: &Hash,
     ) -> Result<Option<Hash>, Self::Error>;
 
-    fn get_proof(
-        &self,
-        root: Option<&Hash>,
-        key: &Hash,
-    ) -> Result<Option<Self::Proof>, Self::Error>;
+    /// Get a proof (SMT audit path) for the key starting from the given root.
+    fn get_proof(&self, root: &Hash, key: &Hash) -> Result<Self::Proof, Self::Error>;
+
+    /// Render the tree to a Mermaid diagram starting from the given root.
+    ///
+    /// Not all implementations support diagram rendering. They will always return `None`.
+    #[allow(unused_variables)]
+    fn render(&self, root: &Hash) -> Option<String> {
+        None
+    }
 }
 
 impl Smt for SmtRocks {
@@ -62,12 +75,11 @@ impl Smt for SmtRocks {
         self.0.borrow_mut().insert(root, key, value)
     }
 
-    fn get_proof(
-        &self,
-        root: Option<&Hash>,
-        key: &Hash,
-    ) -> Result<Option<Self::Proof>, Self::Error> {
-        self.0.borrow_mut().get_merkle_proof(root, key)
+    fn get_proof(&self, root: &Hash, key: &Hash) -> Result<Self::Proof, Self::Error> {
+        self.0
+            .borrow_mut()
+            .get_merkle_proof(Some(root), key)?
+            .ok_or_else(|| monotree::Errors::new("Invalid root"))
     }
 }
 
@@ -97,11 +109,10 @@ impl Smt for SmtSled {
         self.0.borrow_mut().insert(root, key, value)
     }
 
-    fn get_proof(
-        &self,
-        root: Option<&Hash>,
-        key: &Hash,
-    ) -> Result<Option<Self::Proof>, Self::Error> {
-        self.0.borrow_mut().get_merkle_proof(root, key)
+    fn get_proof(&self, root: &Hash, key: &Hash) -> Result<Self::Proof, Self::Error> {
+        self.0
+            .borrow_mut()
+            .get_merkle_proof(Some(root), key)?
+            .ok_or_else(|| monotree::Errors::new("Invalid root"))
     }
 }
