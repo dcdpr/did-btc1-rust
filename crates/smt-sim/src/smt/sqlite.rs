@@ -13,9 +13,6 @@ pub enum Error {
     /// Invalid Merkle root
     InvalidRoot,
 
-    /// Bad Path
-    BadPath,
-
     /// Invalid Proof
     InvalidProof,
 
@@ -64,7 +61,9 @@ impl Smt for SmtSqlite {
         let mut tx = self.db.unchecked_transaction()?;
         tx.set_drop_behavior(rusqlite::DropBehavior::Commit);
 
-        self.insert_inner(root, key, value, 0)
+        let (root, _) = self.insert_inner(root, key, value, 0)?;
+
+        Ok(root)
     }
 
     fn get_proof(
@@ -73,9 +72,9 @@ impl Smt for SmtSqlite {
         key: &Hash,
     ) -> Result<Option<Self::Proof>, Self::Error> {
         let mut proof = Proof { path: Vec::new() };
-        let root = root.ok_or(Error::InvalidRoot)?;
 
-        self.build_proof(&mut proof, root, root, key, 0)?;
+        self.build_proof(&mut proof, root.ok_or(Error::InvalidRoot)?, key, 0)?;
+
         Ok(Some(proof))
     }
 }
@@ -87,73 +86,61 @@ impl SmtSqlite {
         key: &Hash,
         value: &Hash,
         depth: u16,
-    ) -> Result<Option<Hash>, Error> {
+    ) -> Result<(Option<Hash>, Prefix), Error> {
         // Keep track of depth, ensure it never exceeds 257 (256 levels + the root)
         if depth > (u8::MAX as u16) + 1 {
             return Err(Error::TooDeep);
         }
 
         if let Some(root) = root {
-            let node = self.get_node(root)?;
-
-            match dbg!(node.ok_or(Error::InvalidRoot)?) {
+            match self.get_node(root)?.ok_or(Error::InvalidRoot)? {
                 SmtNode::Leaf { key: old_key } => {
                     // When the root is a leaf node, create a new root and sibling leaf node.
-                    let new_node = self.insert_leaf(key, value)?;
                     let prefix = Prefix::longest_matching(key, &old_key);
 
-                    eprintln!("insert key (leaf): {}", hex::encode(key));
-                    Ok(Some(if dbg!(get_nth_bit(key, dbg!(&prefix).bit_count)) {
-                        self.insert_node(prefix, root, &new_node)
-                    } else {
-                        self.insert_node(prefix, &new_node, root)
-                    }?))
+                    self.insert_node(root, key, value, prefix)
                 }
 
-                SmtNode::Node { left, right, .. } => {
-                    // When the root is a full node, traverse the tree to find the insert location.
-                    eprintln!("insert key (node): {}", hex::encode(key));
-                    let insert_on_right = dbg!(get_nth_bit(key, dbg!(depth)));
-                    let new_node = if insert_on_right {
-                        self.insert_inner(Some(&right), key, value, depth + 1)
+                SmtNode::Node {
+                    prefix,
+                    left,
+                    right,
+                } => {
+                    // When the root is a full node, compare against the prefix to determine whether
+                    // the new node will be internal or external.
+                    //
+                    // It's internal if the prefix matches: traverse the tree to find the insert
+                    // location. Otherwise it's external and the new node needs to point to the
+                    // existing node.
+                    let matching = Prefix::longest_matching(&prefix.path, key);
+                    if matching.bit_count < prefix.bit_count {
+                        // Create external node.
+                        self.insert_node(root, key, value, matching)
                     } else {
-                        self.insert_inner(Some(&left), key, value, depth + 1)
-                    }?
-                    .unwrap();
+                        // Insert internal node.
+                        let depth = depth.max(prefix.bit_count);
+                        let insert_on_right = get_nth_bit(key, depth);
+                        let target_root = if insert_on_right { &right } else { &left };
+                        let (new_node, child_prefix) =
+                            self.insert_inner(Some(target_root), key, value, depth + 1)?;
+                        let new_node = new_node.unwrap();
+                        let new_prefix = Prefix::new(child_prefix.bit_count.min(depth), key);
 
-                    // Update the existing node to point at the new node.
-                    Ok(Some(if insert_on_right {
-                        // Get the sibling node's key
-                        let sibling_node = self.get_node(&left)?.unwrap();
-                        // TODO: handle getting the key when the sibling is an intermediate node
-                        let SmtNode::Leaf { key: sibling_key } = sibling_node else {
-                            panic!("TODO: Get key at some depth");
-                        };
+                        // Update the existing node to point at the new node.
+                        let new_root = if insert_on_right {
+                            self.update_right(root, &new_prefix, &left, &new_node)
+                        } else {
+                            self.update_left(root, &new_prefix, &new_node, &right)
+                        }?;
 
-                        eprintln!("sibling key (right): {}", hex::encode(sibling_key));
-                        let prefix = dbg!(Prefix::longest_matching(&sibling_key, key));
-
-                        self.update_right(root, prefix, &left, &new_node)
-                    } else {
-                        // Get the sibling node's key
-                        let sibling_node = self.get_node(&right)?.unwrap();
-                        // TODO: handle getting the key when the sibling is an intermediate node
-                        let SmtNode::Leaf { key: sibling_key } = sibling_node else {
-                            panic!("TODO: Get key at some depth");
-                        };
-
-                        eprintln!("sibling key (left): {}", hex::encode(sibling_key));
-                        let prefix = dbg!(Prefix::longest_matching(key, &new_node));
-
-                        self.update_left(root, prefix, &new_node, &right)
-                    }?))
+                        Ok((Some(new_root), new_prefix))
+                    }
                 }
             }
         } else {
-            eprintln!("key (root): {}", hex::encode(key));
             let leaf = self.insert_leaf(key, value)?;
 
-            Ok(Some(leaf))
+            Ok((Some(leaf), Prefix::new(256, key)))
         }
     }
 
@@ -183,7 +170,19 @@ impl SmtSqlite {
         Ok(id)
     }
 
-    fn insert_node(&self, prefix: Prefix, left: &Hash, right: &Hash) -> rusqlite::Result<Hash> {
+    fn insert_node(
+        &self,
+        root: &Hash,
+        key: &Hash,
+        value: &Hash,
+        prefix: Prefix,
+    ) -> Result<(Option<Hash>, Prefix), Error> {
+        let new_node = self.insert_leaf(key, value)?;
+        let (left, right) = if get_nth_bit(key, prefix.bit_count) {
+            (root, &new_node)
+        } else {
+            (&new_node, root)
+        };
         let id = hash_concat(left, right);
 
         self.db.execute(
@@ -196,13 +195,13 @@ impl SmtSqlite {
             },
         )?;
 
-        Ok(id)
+        Ok((Some(id), prefix))
     }
 
     fn update_left(
         &self,
         id: &Hash,
-        prefix: Prefix,
+        prefix: &Prefix,
         left: &Hash,
         right: &Hash,
     ) -> rusqlite::Result<Hash> {
@@ -224,7 +223,7 @@ impl SmtSqlite {
     fn update_right(
         &self,
         id: &Hash,
-        prefix: Prefix,
+        prefix: &Prefix,
         left: &Hash,
         right: &Hash,
     ) -> rusqlite::Result<Hash> {
@@ -247,32 +246,28 @@ impl SmtSqlite {
         &self,
         proof: &mut Proof,
         root: &Hash,
-        sibling: &Hash,
         key: &Hash,
         depth: u16,
     ) -> Result<(), Error> {
-        println!("root: {}", hex::encode(root));
-        let node = self.get_node(root)?;
-
-        proof.path.push(*sibling);
-
-        match dbg!(node.ok_or(Error::InvalidRoot)?) {
-            SmtNode::Leaf { .. } => {
-                proof.path.push(*root);
-
-                Ok(())
-            }
+        match self.get_node(root)?.ok_or(Error::InvalidRoot)? {
+            SmtNode::Leaf { .. } => Ok(()),
 
             SmtNode::Node {
+                prefix,
                 left,
                 right,
-                prefix,
             } => {
-                dbg!(prefix);
+                let depth = depth.max(prefix.bit_count);
                 if get_nth_bit(key, depth) {
-                    self.build_proof(proof, &right, &left, key, depth + 1)
+                    // Sibling is on the left.
+                    proof.path.push((false, left));
+
+                    self.build_proof(proof, &right, key, depth + 1)
                 } else {
-                    self.build_proof(proof, &left, &right, key, depth + 1)
+                    // Sibling is on the right.
+                    proof.path.push((true, right));
+
+                    self.build_proof(proof, &left, key, depth + 1)
                 }
             }
         }
@@ -290,7 +285,7 @@ impl SmtSqlite {
             SmtNode::Leaf { key } => {
                 writeln!(
                     mermaid,
-                    "  {}[\"hash: {}\nkey: {}\"]",
+                    r#"  {}["Leaf<br />hash: {}<br />key: {}"]"#,
                     hex::encode(&hash[..4]),
                     hex::encode(&hash[..4]),
                     hex::encode(&key[..4]),
@@ -298,26 +293,31 @@ impl SmtSqlite {
                 .unwrap();
             }
 
-            SmtNode::Node { left, right, .. } => {
-                writeln!(
-                    mermaid,
-                    "  {} --> {}",
-                    hex::encode(&hash[..4]),
-                    hex::encode(&left[..4]),
-                )
-                .unwrap();
-                self.render_inner(mermaid, &left);
-
-                writeln!(
-                    mermaid,
-                    "  {} --> {}",
-                    hex::encode(&hash[..4]),
-                    hex::encode(&right[..4]),
-                )
-                .unwrap();
-                self.render_inner(mermaid, &right);
+            SmtNode::Node {
+                prefix,
+                left,
+                right,
+            } => {
+                self.render_node(mermaid, hash, &prefix, &left);
+                self.render_node(mermaid, hash, &prefix, &right);
             }
         }
+    }
+
+    fn render_node(&self, mermaid: &mut String, hash: &Hash, prefix: &Prefix, next: &Hash) {
+        let prefix_bytes = prefix.to_bytes();
+
+        writeln!(
+            mermaid,
+            r#"  {}["Node<br />hash: {}<br />prefix: (bit_count {}) {}"] --> {}"#,
+            hex::encode(&hash[..4]),
+            hex::encode(&hash[..4]),
+            prefix.bit_count,
+            hex::encode(&prefix_bytes[2..6.min(prefix_bytes.len())]),
+            hex::encode(&next[..4]),
+        )
+        .unwrap();
+        self.render_inner(mermaid, next);
     }
 }
 
@@ -468,14 +468,17 @@ impl fmt::Debug for Prefix {
 }
 
 pub struct Proof {
-    path: Vec<Hash>, // 0th: root hash; path hashes; nth: hash(key || value);
+    path: Vec<(bool, Hash)>, // 0th: root hash; path hashes; nth: hash(key || value);
 }
 
 impl fmt::Display for Proof {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Proof [\n")?;
-        for segment in &self.path {
-            writeln!(f, "    {},", hex::encode(segment))?;
+        for (sibling_on_right, sibling) in &self.path {
+            // Arrow points in the direction of the sibling.
+            let arrow = if *sibling_on_right { "-->" } else { "<--" };
+
+            writeln!(f, "    {} {},", arrow, hex::encode(sibling))?;
         }
         f.write_str("]")
     }
@@ -483,42 +486,21 @@ impl fmt::Display for Proof {
 
 impl Proof {
     pub fn verify(&self, root: &Hash, key: &Hash, value: &Hash) -> Result<(), Error> {
-        let leaf = hash_concat(key, value);
+        let mut hash = hash_concat(key, value);
 
-        // TODO: These checks can be implied by the final hash comparison
-        // (these hashes are not needed in the path)
-        if root != &self.path[0] {
-            return Err(Error::InvalidRoot);
-        }
-        if &leaf != self.path.last().ok_or(Error::BadPath)? {
-            return Err(Error::BadPath);
-        }
-
-        let mut hash = leaf;
-
-        // TODO: The order of hash updates matters
-        for (i, node) in self.path[..self.path.len() - 1]
-            .iter()
-            .skip(1)
-            .enumerate()
-            .rev()
-        {
-            hash = if get_nth_bit(key, dbg!(i.try_into().unwrap())) {
-                hash_concat(node, &hash)
+        for (sibling_on_right, sibling) in self.path.iter().rev() {
+            hash = if *sibling_on_right {
+                hash_concat(&hash, sibling)
             } else {
-                hash_concat(&hash, node)
+                hash_concat(sibling, &hash)
             };
         }
 
-        let possible_root = hash;
-
-        println!("possible_root: {}", hex::encode(possible_root.as_slice()));
-
-        if possible_root.as_slice() != root {
-            return Err(Error::InvalidProof);
+        if hash.as_slice() == root {
+            Ok(())
+        } else {
+            Err(Error::InvalidProof)
         }
-
-        Ok(())
     }
 }
 
@@ -558,6 +540,11 @@ mod tests {
         let actual = Prefix::longest_matching(&[6; 32], &[0; 32]).to_bytes();
         let mut expected = [0; 3];
         expected[..2].copy_from_slice(&5_u16.to_le_bytes()[..2]);
+        assert_eq!(actual, expected);
+
+        let actual = Prefix::longest_matching(&[0x66; 32], &[0; 32]).to_bytes();
+        let mut expected = [0; 3];
+        expected[..2].copy_from_slice(&1_u16.to_le_bytes()[..2]);
         assert_eq!(actual, expected);
     }
 }

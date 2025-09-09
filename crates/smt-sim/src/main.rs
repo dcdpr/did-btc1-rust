@@ -49,28 +49,36 @@ fn create_proof() {
     // Remove old DB (if any)
     Command::new("rm").args(["-rf", db_path]).output().unwrap();
 
-    // let (smt, root) = smt_demo::<SmtSqlite>(db_path, 10_000);
-    let (smt, root) = smt_demo_with_diagrams(db_path, 4);
+    let total_nodes = 32;
+    println!("Inserting and verifying proofs for {total_nodes} nodes...");
 
-    let key = random_hash();
-    let value = random_hash();
-    let leaf = hash_concat(&key, &value);
-    let root = smt.insert(Some(&root), &key, &value).unwrap();
+    let (smt, root, kv_pairs) = smt_demo::<SmtSqlite>(db_path, total_nodes);
+    // let (smt, root, kv_pairs) = smt_demo_with_diagrams(db_path, total_nodes);
 
-    let proof = smt.get_proof(root.as_ref(), &key).unwrap().unwrap();
+    println!("root: {}", hex::encode(root));
+    println!();
 
-    println!("key: {}", hex::encode(key));
-    println!("value: {}", hex::encode(value));
-    println!("root: {}", hex::encode(root.unwrap()));
-    println!("leaf: {}", hex::encode(leaf));
-    println!("proof: {proof}");
-    // println!("proof: {}", print_proof(&proof)); // for monotree
+    for (key, value) in kv_pairs {
+        let leaf = hash_concat(&key, &value);
 
-    std::fs::write("smt.mmd", smt.render(&root.unwrap()).unwrap()).unwrap();
+        let proof = smt.get_proof(Some(&root), &key).unwrap().unwrap();
 
-    proof.verify(&root.unwrap(), &key, &value).unwrap();
+        println!("key: {}", hex::encode(key));
+        println!("value: {}", hex::encode(value));
+        println!("leaf: {}", hex::encode(leaf));
+        println!("proof: {proof}");
+        // println!("proof: {}", print_proof(&proof)); // for monotree
+
+        std::fs::write("smt.mmd", smt.render(&root).unwrap()).unwrap();
+
+        proof.verify(&root, &key, &value).unwrap();
+        println!();
+    }
+
+    println!("All proofs verified!");
 }
 
+#[allow(dead_code)]
 fn print_proof(proof: &[(bool, Vec<u8>)]) -> String {
     let mut pretty = String::new();
 
@@ -130,39 +138,45 @@ where
     println!();
 }
 
-fn smt_demo<T>(db_path: &str, cohort_size: u64) -> (T, Hash)
+fn smt_demo<T>(db_path: &str, cohort_size: u64) -> (T, Hash, Vec<(Hash, Hash)>)
 where
     T: Smt,
     <T as Smt>::Error: std::fmt::Debug,
 {
     let smt = T::new(db_path).unwrap();
     let mut root = None;
+    let mut kv_pairs = Vec::with_capacity(cohort_size.try_into().unwrap());
 
     smt.prepare();
     for _ in 0..cohort_size {
         let key = random_hash();
-        let leaf = random_hash();
-        root = smt.insert(root.as_ref(), &key, &leaf).unwrap();
+        let value = random_hash();
+        root = smt.insert(root.as_ref(), &key, &value).unwrap();
+        kv_pairs.push((key, value));
     }
     smt.commit();
 
-    (smt, root.unwrap())
+    (smt, root.unwrap(), kv_pairs)
 }
 
-fn smt_demo_with_diagrams(db_path: &str, cohort_size: u64) -> (SmtSqlite, Hash) {
+#[allow(dead_code)]
+fn smt_demo_with_diagrams(db_path: &str, cohort_size: u64) -> (SmtSqlite, Hash, Vec<(Hash, Hash)>) {
     let smt = SmtSqlite::new(db_path).unwrap();
     let mut root = None;
+    let mut kv_pairs = Vec::with_capacity(cohort_size.try_into().unwrap());
 
     smt.prepare();
     for i in 0..cohort_size {
         let key = random_hash();
-        let leaf = random_hash();
-        root = smt.insert(root.as_ref(), &key, &leaf).unwrap();
+        let value = random_hash();
+        root = smt.insert(root.as_ref(), &key, &value).unwrap();
+        kv_pairs.push((key, value));
+
         std::fs::write(format!("smt.{i}.mmd"), smt.render(&root.unwrap()).unwrap()).unwrap();
     }
     smt.commit();
 
-    (smt, root.unwrap())
+    (smt, root.unwrap(), kv_pairs)
 }
 
 fn human_size(size: u64) -> String {
