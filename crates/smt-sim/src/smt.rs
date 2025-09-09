@@ -1,4 +1,4 @@
-pub use self::sqlite::SmtSqlite;
+pub use self::sqlite::{SmtSqlite, hash_concat};
 pub use monotree::Hash;
 use monotree::database::{rocksdb::RocksDB, sled::Sled};
 use monotree::{Monotree, hasher::Sha2};

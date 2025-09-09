@@ -6,14 +6,14 @@ use std::collections::HashMap;
 fn main() -> Result<()> {
     let resolution_options = ResolutionOptions {
         sidecar_data: Some(SidecarData {
-            blockchain_rpc_uri: Some("https://mutinynet.com/api".into()),
+            blockchain_rpc_uri: Some("https://mempool.space/api".into()),
             ..Default::default()
         }),
         ..Default::default()
     };
 
     let agent = ureq::agent();
-    let did = "did:btc1:k1q5pqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsx6n2m7".parse()?;
+    let did = "did:btc1:k1qqpuwwde82nennsavvf0lqfnlvx7frrgzs57lchr02q8mz49qzaaxmqphnvcx".parse()?;
     let mut fsm = Document::read(&did, resolution_options)?;
 
     // Drive the blockchain traversal state machine forward.

@@ -1,4 +1,4 @@
-use crate::smt::{Smt, SmtRocks, SmtSled, SmtSqlite};
+use crate::smt::{Smt, SmtRocks, SmtSled, SmtSqlite, hash_concat};
 use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 use smt::Hash;
 use std::{cell::RefCell, fmt::Write as _, process::Command, time::Instant};
@@ -49,17 +49,26 @@ fn create_proof() {
     // Remove old DB (if any)
     Command::new("rm").args(["-rf", db_path]).output().unwrap();
 
-    let (smt, root) = smt_demo::<SmtRocks>(db_path, 10_000);
+    // let (smt, root) = smt_demo::<SmtSqlite>(db_path, 10_000);
+    let (smt, root) = smt_demo_with_diagrams(db_path, 4);
 
     let key = random_hash();
-    let leaf = random_hash();
-    let root = smt.insert(Some(&root), &key, &leaf).unwrap();
+    let value = random_hash();
+    let leaf = hash_concat(&key, &value);
+    let root = smt.insert(Some(&root), &key, &value).unwrap();
 
     let proof = smt.get_proof(root.as_ref(), &key).unwrap().unwrap();
 
     println!("key: {}", hex::encode(key));
+    println!("value: {}", hex::encode(value));
+    println!("root: {}", hex::encode(root.unwrap()));
     println!("leaf: {}", hex::encode(leaf));
-    println!("proof: {}", print_proof(&proof));
+    println!("proof: {proof}");
+    // println!("proof: {}", print_proof(&proof)); // for monotree
+
+    std::fs::write("smt.mmd", smt.render(&root.unwrap()).unwrap()).unwrap();
+
+    proof.verify(&root.unwrap(), &key, &value).unwrap();
 }
 
 fn print_proof(proof: &[(bool, Vec<u8>)]) -> String {
@@ -134,6 +143,22 @@ where
         let key = random_hash();
         let leaf = random_hash();
         root = smt.insert(root.as_ref(), &key, &leaf).unwrap();
+    }
+    smt.commit();
+
+    (smt, root.unwrap())
+}
+
+fn smt_demo_with_diagrams(db_path: &str, cohort_size: u64) -> (SmtSqlite, Hash) {
+    let smt = SmtSqlite::new(db_path).unwrap();
+    let mut root = None;
+
+    smt.prepare();
+    for i in 0..cohort_size {
+        let key = random_hash();
+        let leaf = random_hash();
+        root = smt.insert(root.as_ref(), &key, &leaf).unwrap();
+        std::fs::write(format!("smt.{i}.mmd"), smt.render(&root.unwrap()).unwrap()).unwrap();
     }
     smt.commit();
 
