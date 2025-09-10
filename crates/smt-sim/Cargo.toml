@@ -12,3 +12,7 @@ plotters = "0.3"
 rand = "0.8"
 rusqlite = { version = "0.37", features = ["bundled"] }
 sha2 = "0.10"
+
+[dev-dependencies]
+arbtest = "0.3"
+tempfile = "3"

@@ -102,7 +102,7 @@ impl SmtBackend for SmtNih {
         key: &Hash,
         value: &Hash,
         prefix: Prefix,
-    ) -> (Option<Hash>, Prefix) {
+    ) -> (Option<Hash>, Option<Prefix>) {
         let new_node = self.insert_leaf(key, value);
         let (left, right) = if get_nth_bit(key, prefix.bit_count) {
             (root, &new_node)
@@ -121,7 +121,7 @@ impl SmtBackend for SmtNih {
             },
         );
 
-        (Some(id), prefix)
+        (Some(id), Some(prefix))
     }
 
     fn update(&self, id: &Hash, prefix: &Prefix, left: &Hash, right: &Hash) -> Hash {

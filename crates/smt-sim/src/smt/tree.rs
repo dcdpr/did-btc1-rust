@@ -33,7 +33,7 @@ pub(crate) trait SmtBackend {
         key: &Hash,
         value: &Hash,
         depth: u16,
-    ) -> Result<(Option<Hash>, Prefix), Self::Error> {
+    ) -> Result<(Option<Hash>, Option<Prefix>), Self::Error> {
         // Keep track of depth, ensure it never exceeds 257 (256 levels + the root)
         if depth > (u8::MAX as u16) + 1 {
             return Err(Error::TooDeep.into());
@@ -42,7 +42,12 @@ pub(crate) trait SmtBackend {
         if let Some(root) = root {
             match self.get_node(root).ok_or(Error::InvalidRoot)? {
                 SmtNode::Leaf { key: old_key } => {
-                    // When the root is a leaf node, create a new root and sibling leaf node.
+                    // When the root is a leaf node, create a new root and sibling leaf node, unless
+                    // the key already exists.
+                    if key == &old_key {
+                        return Ok((Some(*root), None))
+                    }
+
                     let prefix = Prefix::longest_matching(key, &old_key);
 
                     Ok(self.insert_node(root, key, value, prefix))
@@ -71,6 +76,9 @@ pub(crate) trait SmtBackend {
                         let (new_node, child_prefix) =
                             self.insert_inner(Some(target_root), key, value, depth + 1)?;
                         let new_node = new_node.unwrap();
+                        let Some(child_prefix) = child_prefix else {
+                            return Ok((Some(new_node), None))
+                        };
                         let new_prefix = Prefix::new(child_prefix.bit_count.min(depth), key);
 
                         // Update the existing node to point at the new node.
@@ -80,14 +88,14 @@ pub(crate) trait SmtBackend {
                             self.update(root, &new_prefix, &new_node, &right)
                         };
 
-                        Ok((Some(new_root), new_prefix))
+                        Ok((Some(new_root), Some(new_prefix)))
                     }
                 }
             }
         } else {
             let leaf = self.insert_leaf(key, value);
 
-            Ok((Some(leaf), Prefix::new(256, key)))
+            Ok((Some(leaf), None))
         }
     }
 
@@ -107,7 +115,7 @@ pub(crate) trait SmtBackend {
         key: &Hash,
         value: &Hash,
         prefix: Prefix,
-    ) -> (Option<Hash>, Prefix);
+    ) -> (Option<Hash>, Option<Prefix>);
 
     /// Update the links and prefix in an existing intermediate node identified by its [`type@Hash`]
     /// identifier.
@@ -349,9 +357,15 @@ impl enc::Encode for Prefix {
 /// Constructed by [`Smt::get_proof`].
 ///
 /// [`Smt::get_proof`]: crate::smt::Smt::get_proof
+#[derive(Clone)]
 pub struct Proof {
+    // TODO: `Arrow` should not be embedded with the hashes. It should be separate variable-length
+    // bitmap. This will reduce the size of serialized proofs proportional to the cohort size.
+    // // bitmap: Prefix,
+
     // TODO: Probably want to reverse the order to be compatible with the spec. VecDeque can do that
     // cheaply.
+    //
     /// Stores sibling hashes along the tree traversal path, ordered root -> leaf (omitting both).
     ///
     /// [`Self::verify`] requires the root and leaf to be provided as arguments.
@@ -395,6 +409,7 @@ impl fmt::Display for Proof {
 }
 
 /// The sibling direction in relation to the traversal path.
+#[derive(Copy, Clone)]
 enum Arrow {
     Left,
     Right,
@@ -412,6 +427,69 @@ impl fmt::Display for Arrow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::smt::{Smt as _, SmtNih};
+    use arbtest::arbitrary::{Result as ArbResult, Unstructured};
+    use arbtest::arbtest;
+    use std::{collections::BTreeMap, ops::Range};
+    use tempfile::NamedTempFile;
+
+    /// Generate hashes that share a prefix determined by the prefix range.
+    ///
+    /// Prefix ranges starting at 0 will always share the first bit.
+    ///
+    /// Generated hashes will be distributed across the prefix range. For instance, when
+    /// `prefix_range = 4..17`, all hashes will share a prefix between 5 and 17 (inclusive) bits.
+    ///
+    /// In other words, all hashes are guaranteed to start with exactly the same 5 bits (0 to 4),
+    /// and have successively diminishing probability to share the next 12 bits:
+    ///
+    /// - Approximately 50% of hashes will share a 6-bit prefix.
+    /// - Approximately 25% of hashes will share a 7-bit prefix.
+    /// - Approximately 12.5% of hashes will share an 8-bit prefix.
+    /// - ...
+    /// - Approximately 0.0244140625% of hashes will share a 17-bit prefix.
+    ///
+    /// Bits beyond `prefix_range.end` are entirely random.
+    ///
+    /// In general, the probability for each bit is calculated by:
+    ///
+    /// ```
+    /// P = 1 / 2 ** (bit_index - prefix_range.start)
+    /// ```
+    ///
+    /// Where `bit_index` is a 0-based bit index within the hash.
+    fn arb_hashes(
+        u: &mut Unstructured,
+        num_hashes: usize,
+        prefix_range: Range<u16>,
+    ) -> ArbResult<Vec<Hash>> {
+        let bit_count = u.int_in_range(prefix_range.start..=prefix_range.end)?;
+        let byte_count = Prefix::byte_count(bit_count);
+        let hash = u.arbitrary()?;
+        let prefix = Prefix::new(bit_count, &hash);
+        let mut mask = 0xff;
+
+        let leading_bits = bit_count % 8;
+        if leading_bits > 0 {
+            mask = 0xff >> leading_bits;
+        }
+
+        Ok((0..num_hashes)
+            .map(|_| {
+                let random_hash: Hash = u.arbitrary().unwrap();
+                let mut new_hash = [0; 32];
+                new_hash[byte_count..].copy_from_slice(&random_hash[byte_count..]);
+                new_hash[..byte_count].copy_from_slice(&prefix.path[..byte_count]);
+
+                if byte_count > 0 {
+                    let i = byte_count - 1;
+                    new_hash[i] |= random_hash[i] & mask;
+                }
+
+                new_hash
+            })
+            .collect())
+    }
 
     #[test]
     fn test_prefix_new() {
@@ -451,5 +529,98 @@ mod tests {
         let mut expected = [0; 3];
         expected[..2].copy_from_slice(&1_u16.to_le_bytes()[..2]);
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn arbtest_proofs() {
+        arbtest(|u| {
+            // Generate a bunch of hashes
+            let num_hashes = u.int_in_range(1..=100_000)?;
+            let prefix_bit_range_start = u.int_in_range(0..=256)?;
+            let prefix_bit_range_end = u.int_in_range(prefix_bit_range_start..=256)?;
+
+            let hashes = arb_hashes(u, num_hashes, prefix_bit_range_start..prefix_bit_range_end)
+                .unwrap()
+                .into_iter()
+                .map(|hash| {
+                    let value = u.arbitrary()?;
+
+                    Ok((hash, value))
+                })
+                .collect::<ArbResult<BTreeMap<_, Hash>>>()?;
+
+            // Create an SMT. Note that the temp file will be empty, because we do not call
+            // the `commit()` method.
+            let db_path = NamedTempFile::new().unwrap();
+            let tree = SmtNih::new(&db_path.path().to_string_lossy()).unwrap();
+
+            // Insert all of the hashes into the tree.
+            let mut root = None;
+            for (key, value) in &hashes {
+                root = tree.insert(root.as_ref(), key, value).unwrap();
+            }
+
+            // Verify all proof paths for every hash inserted.
+            let root = root.unwrap();
+            for (key, value) in &hashes {
+                let proof = tree.get_proof(&root, key).unwrap();
+
+                proof.verify(&root, key, value).unwrap();
+            }
+
+            Ok(())
+        })
+        .size_min(100_000)
+        .size_max(1_000_000);
+    }
+
+    #[test]
+    fn arbtest_proof_sibling_sides() {
+        arbtest(|u| {
+            let db_path = NamedTempFile::new().unwrap();
+            let tree = SmtNih::new(&db_path.path().to_string_lossy()).unwrap();
+
+            let leftmost = [0x00; 32];
+            let rightmost = [0xff; 32];
+
+            let num_hashes = u.int_in_range(100..=10_000)?;
+            let mut root = None;
+            for hash in arb_hashes(u, num_hashes, 0..256)? {
+                let value = u.arbitrary()?;
+                root = tree.insert(root.as_ref(), &hash, &value).unwrap();
+            }
+
+            let root = root.unwrap();
+            let left_proof = tree.get_proof(&root, &leftmost).unwrap();
+            let right_proof = tree.get_proof(&root, &rightmost).unwrap();
+
+            // All siblings in the leftmost proof will point to the right.
+            for (arrow, _) in left_proof.path {
+                assert!(matches!(arrow, Arrow::Right));
+            }
+
+            // All siblings in the rightmost proof will point to the left.
+            for (arrow, _) in right_proof.path {
+                assert!(matches!(arrow, Arrow::Left));
+            }
+
+            Ok(())
+        })
+        .size_min(1_000_000)
+        .size_max(10_000_000);
+    }
+
+    #[test]
+    fn test_tree_duplicate_inserts() {
+        let db_path = NamedTempFile::new().unwrap();
+        let tree = SmtNih::new(&db_path.path().to_string_lossy()).unwrap();
+
+        let key = [0; 32];
+        let value = [0; 32];
+
+        let mut root = None;
+        for _ in 0..32 {
+            root = tree.insert(root.as_ref(), &key, &value).unwrap();
+        }
     }
 }
