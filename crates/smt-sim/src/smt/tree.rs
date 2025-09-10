@@ -20,6 +20,9 @@ pub enum Error {
 
     /// Sparse Merkle Tree depth exceeded maximum
     TooDeep,
+
+    /// Values cannot be changed
+    ValueChanged,
 }
 
 /// This trait is an implementation detail. It provides the shared algorithms as default
@@ -45,12 +48,16 @@ pub(crate) trait SmtBackend {
                     // When the root is a leaf node, create a new root and sibling leaf node, unless
                     // the key already exists.
                     if key == &old_key {
-                        return Ok((Some(*root), None))
+                        if &hash_concat(key, value) != root {
+                            Err(Error::ValueChanged.into())
+                        } else {
+                            Ok((Some(*root), None))
+                        }
+                    } else {
+                        let prefix = Prefix::longest_matching(key, &old_key);
+
+                        Ok(self.insert_node(root, key, value, prefix))
                     }
-
-                    let prefix = Prefix::longest_matching(key, &old_key);
-
-                    Ok(self.insert_node(root, key, value, prefix))
                 }
 
                 SmtNode::Node {
@@ -75,10 +82,10 @@ pub(crate) trait SmtBackend {
                         let target_root = if insert_on_right { &right } else { &left };
                         let (new_node, child_prefix) =
                             self.insert_inner(Some(target_root), key, value, depth + 1)?;
-                        let new_node = new_node.unwrap();
                         let Some(child_prefix) = child_prefix else {
-                            return Ok((Some(new_node), None))
+                            return Ok((Some(*root), None));
                         };
+                        let new_node = new_node.unwrap();
                         let new_prefix = Prefix::new(child_prefix.bit_count.min(depth), key);
 
                         // Update the existing node to point at the new node.
@@ -427,10 +434,12 @@ impl fmt::Display for Arrow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::smt::nih::Error as NihError;
     use crate::smt::{Smt as _, SmtNih};
     use arbtest::arbitrary::{Result as ArbResult, Unstructured};
     use arbtest::arbtest;
-    use std::{collections::BTreeMap, ops::Range};
+    use std::collections::{BTreeMap, HashSet};
+    use std::ops::Range;
     use tempfile::NamedTempFile;
 
     /// Generate hashes that share a prefix determined by the prefix range.
@@ -462,7 +471,7 @@ mod tests {
         u: &mut Unstructured,
         num_hashes: usize,
         prefix_range: Range<u16>,
-    ) -> ArbResult<Vec<Hash>> {
+    ) -> ArbResult<HashSet<Hash>> {
         let bit_count = u.int_in_range(prefix_range.start..=prefix_range.end)?;
         let byte_count = Prefix::byte_count(bit_count);
         let hash = u.arbitrary()?;
@@ -619,8 +628,25 @@ mod tests {
         let value = [0; 32];
 
         let mut root = None;
+
+        // Insert the first key, then attempt to insert a duplicate.
+        root = tree.insert(root.as_ref(), &key, &value).unwrap();
+        root = tree.insert(root.as_ref(), &key, &value).unwrap();
+
+        // Insert a bunch of random keys.
         for _ in 0..32 {
-            root = tree.insert(root.as_ref(), &key, &value).unwrap();
+            let random_key = rand::random();
+
+            root = tree.insert(root.as_ref(), &random_key, &value).unwrap();
         }
+
+        // The root must not change when a duplicate is inserted.
+        assert_eq!(tree.insert(root.as_ref(), &key, &value).unwrap(), root);
+
+        // Attempting to change the value at an existing key will return an error.
+        assert!(matches!(
+            tree.insert(root.as_ref(), &key, &[0xff; 32]),
+            Err(NihError::Smt(Error::ValueChanged)),
+        ));
     }
 }
