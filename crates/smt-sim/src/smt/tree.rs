@@ -438,8 +438,7 @@ mod tests {
     use crate::smt::{Smt as _, SmtNih};
     use arbtest::arbitrary::{Result as ArbResult, Unstructured};
     use arbtest::arbtest;
-    use std::collections::{BTreeMap, HashSet};
-    use std::ops::Range;
+    use std::{collections::HashSet, ops::Range};
     use tempfile::NamedTempFile;
 
     /// Generate hashes that share a prefix determined by the prefix range.
@@ -547,16 +546,7 @@ mod tests {
             let num_hashes = u.int_in_range(1..=100_000)?;
             let prefix_bit_range_start = u.int_in_range(0..=256)?;
             let prefix_bit_range_end = u.int_in_range(prefix_bit_range_start..=256)?;
-
-            let hashes = arb_hashes(u, num_hashes, prefix_bit_range_start..prefix_bit_range_end)
-                .unwrap()
-                .into_iter()
-                .map(|hash| {
-                    let value = u.arbitrary()?;
-
-                    Ok((hash, value))
-                })
-                .collect::<ArbResult<BTreeMap<_, Hash>>>()?;
+            let hashes = arb_hashes(u, num_hashes, prefix_bit_range_start..prefix_bit_range_end)?;
 
             // Create an SMT. Note that the temp file will be empty, because we do not call
             // the `commit()` method.
@@ -565,16 +555,16 @@ mod tests {
 
             // Insert all of the hashes into the tree.
             let mut root = None;
-            for (key, value) in &hashes {
-                root = tree.insert(root.as_ref(), key, value).unwrap();
+            for hash in &hashes {
+                root = tree.insert(root.as_ref(), hash, hash).unwrap();
             }
 
             // Verify all proof paths for every hash inserted.
             let root = root.unwrap();
-            for (key, value) in &hashes {
-                let proof = tree.get_proof(&root, key).unwrap();
+            for hash in &hashes {
+                let proof = tree.get_proof(&root, hash).unwrap();
 
-                proof.verify(&root, key, value).unwrap();
+                proof.verify(&root, hash, hash).unwrap();
             }
 
             Ok(())
@@ -584,24 +574,90 @@ mod tests {
     }
 
     #[test]
-    fn arbtest_proof_sibling_sides() {
+    fn arbtest_proof_sibling_boundaries() {
         arbtest(|u| {
             let db_path = NamedTempFile::new().unwrap();
             let tree = SmtNih::new(&db_path.path().to_string_lossy()).unwrap();
 
+            // Check proof paths for the keys at the boundaries of the keyspace.
             let leftmost = [0x00; 32];
             let rightmost = [0xff; 32];
 
             let num_hashes = u.int_in_range(10..=10_000)?;
             let mut root = None;
             for hash in arb_hashes(u, num_hashes, 0..256)? {
-                let value = u.arbitrary()?;
-                root = tree.insert(root.as_ref(), &hash, &value).unwrap();
+                root = tree.insert(root.as_ref(), &hash, &hash).unwrap();
             }
+
+            // Insert leftmost and rightmost hashes, then verify proofs.
+            root = tree.insert(root.as_ref(), &leftmost, &leftmost).unwrap();
+            root = tree.insert(root.as_ref(), &rightmost, &rightmost).unwrap();
 
             let root = root.unwrap();
             let left_proof = tree.get_proof(&root, &leftmost).unwrap();
             let right_proof = tree.get_proof(&root, &rightmost).unwrap();
+
+            left_proof.verify(&root, &leftmost, &leftmost).unwrap();
+            right_proof.verify(&root, &rightmost, &rightmost).unwrap();
+
+            // All siblings in the leftmost proof will point to the right.
+            for (arrow, _) in left_proof.path {
+                assert!(matches!(arrow, Arrow::Right));
+            }
+
+            // All siblings in the rightmost proof will point to the left.
+            for (arrow, _) in right_proof.path {
+                assert!(matches!(arrow, Arrow::Left));
+            }
+
+            Ok(())
+        })
+        .size_min(100_000)
+        .size_max(1_000_000)
+        .budget_ms(500);
+    }
+
+    #[test]
+    fn arbtest_proof_sibling_sides() {
+        arbtest(|u| {
+            let db_path = NamedTempFile::new().unwrap();
+            let tree = SmtNih::new(&db_path.path().to_string_lossy()).unwrap();
+
+            // Create hashes within a narrow band (they all share a random 32-bit prefix)
+            // It is highly unlikely that all 32 bits will be all 0's or 0xff's.
+            let num_hashes = u.int_in_range(10..=10_000)?;
+            let hashes = arb_hashes(u, num_hashes, 32..32)?;
+
+            // If a random hash begins with 0x0 or 0xf, then we'll exit early to allow arbtest to
+            // try another iteration.
+            let random_hash = hashes.iter().next().copied().unwrap();
+            if random_hash[0] <= 0x0f || random_hash[0] >= 0xf0 {
+                return Ok(());
+            }
+
+            // Copy the random hash into leftmost and rightmost, then update the first byte.
+            let mut leftmost = random_hash;
+            leftmost[0] &= 0x0f;
+            let mut rightmost = random_hash;
+            rightmost[0] |= 0xf0;
+
+            // Insert leftmost and rightmost hashes.
+            let mut root = None;
+            root = tree.insert(root.as_ref(), &leftmost, &leftmost).unwrap();
+            root = tree.insert(root.as_ref(), &rightmost, &rightmost).unwrap();
+
+            // Insert all of the random hashes.
+            for hash in hashes {
+                root = tree.insert(root.as_ref(), &hash, &hash).unwrap();
+            }
+
+            // Get and verify leftmost and rightmost proofs.
+            let root = root.unwrap();
+            let left_proof = tree.get_proof(&root, &leftmost).unwrap();
+            let right_proof = tree.get_proof(&root, &rightmost).unwrap();
+
+            left_proof.verify(&root, &leftmost, &leftmost).unwrap();
+            right_proof.verify(&root, &rightmost, &rightmost).unwrap();
 
             // All siblings in the leftmost proof will point to the right.
             for (arrow, _) in left_proof.path {
