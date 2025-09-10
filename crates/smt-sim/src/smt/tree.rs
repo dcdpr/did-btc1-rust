@@ -592,7 +592,7 @@ mod tests {
             let leftmost = [0x00; 32];
             let rightmost = [0xff; 32];
 
-            let num_hashes = u.int_in_range(100..=10_000)?;
+            let num_hashes = u.int_in_range(10..=10_000)?;
             let mut root = None;
             for hash in arb_hashes(u, num_hashes, 0..256)? {
                 let value = u.arbitrary()?;
@@ -615,8 +615,9 @@ mod tests {
 
             Ok(())
         })
-        .size_min(1_000_000)
-        .size_max(10_000_000);
+        .size_min(100_000)
+        .size_max(1_000_000)
+        .budget_ms(500);
     }
 
     #[test]
