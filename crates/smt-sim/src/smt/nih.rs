@@ -37,6 +37,8 @@ impl Smt for SmtNih {
     type Proof = Proof;
     type Error = Error;
 
+    type Transaction<'a> = ();
+
     fn new(db_path: &str) -> Result<Self, Self::Error> {
         Ok(Self {
             // TODO: Load from disk (requires `Decode` implementations on `SmtNode` and `Prefix`)
@@ -45,9 +47,9 @@ impl Smt for SmtNih {
         })
     }
 
-    fn prepare(&self) {}
+    fn prepare(&self) -> Self::Transaction<'_> {}
 
-    fn commit(&self) {
+    fn commit(&self, _tx: Self::Transaction<'_>) {
         let mut writer = BufWriter::new(&self.db);
         bincode::encode_into_std_write(&self.map, &mut writer, bincode::config::standard())
             .unwrap();

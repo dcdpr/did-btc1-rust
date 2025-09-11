@@ -32,6 +32,8 @@ impl Smt for SmtSqlite {
     type Proof = Proof;
     type Error = Error;
 
+    type Transaction<'a> = rusqlite::Transaction<'a>;
+
     fn new(db_path: &str) -> Result<Self, Self::Error> {
         let db = Connection::open(db_path)?;
 
@@ -51,9 +53,14 @@ impl Smt for SmtSqlite {
         Ok(Self { db })
     }
 
-    fn prepare(&self) {}
+    fn prepare(&self) -> Self::Transaction<'_> {
+        let mut tx = self.db.unchecked_transaction().unwrap();
+        tx.set_drop_behavior(rusqlite::DropBehavior::Commit);
 
-    fn commit(&self) {}
+        tx
+    }
+
+    fn commit(&self, _tx: Self::Transaction<'_>) {}
 
     fn insert(
         &self,
@@ -61,9 +68,6 @@ impl Smt for SmtSqlite {
         key: &Hash,
         value: &Hash,
     ) -> Result<Option<Hash>, Self::Error> {
-        let mut tx = self.db.unchecked_transaction()?;
-        tx.set_drop_behavior(rusqlite::DropBehavior::Commit);
-
         let (root, _) = self.insert_inner(root, key, value, 0)?;
 
         Ok(root)
@@ -86,32 +90,38 @@ impl SmtBackend for SmtSqlite {
     type Error = Error;
 
     fn get_node(&self, id: &Hash) -> Option<SmtNode> {
-        self.db
-            .query_one(
+        let mut stmt = self
+            .db
+            .prepare_cached(
                 "SELECT path, key_value, left_child, right_child FROM smt WHERE id = :id",
-                named_params! {
-                    ":id": id,
-                },
-                SmtNode::from_sql,
             )
-            .optional()
-            .unwrap()
+            .unwrap();
+
+        stmt.query_one(
+            named_params! {
+                ":id": id,
+            },
+            SmtNode::from_sql,
+        )
+        .optional()
+        .unwrap()
     }
 
     fn insert_leaf(&self, key: &Hash, value: &Hash) -> Hash {
         let key_value = hash_concat(key, value);
         let id = Arrow::leaf_hash(key, &key_value);
 
-        self.db
-            .execute(
-                "INSERT INTO smt (id, path, key_value) VALUES (:id, :path, :key_value)",
-                named_params! {
-                    ":id": id,
-                    ":path": key,
-                    ":key_value": key_value,
-                },
-            )
+        let mut stmt = self
+            .db
+            .prepare_cached("INSERT INTO smt (id, path, key_value) VALUES (:id, :path, :key_value)")
             .unwrap();
+
+        stmt.execute(named_params! {
+            ":id": id,
+            ":path": key,
+            ":key_value": key_value,
+        })
+        .unwrap();
 
         id
     }
@@ -131,15 +141,21 @@ impl SmtBackend for SmtSqlite {
         };
         let id = hash_concat(left, right);
 
-        self.db.execute(
-            "INSERT INTO smt (id, path, left_child, right_child) VALUES (:id, :path, :left, :right)",
-            named_params! {
-                ":id": id,
-                ":path": prefix.to_bytes(),
-                ":left": left,
-                ":right": right,
-            },
-        ).unwrap();
+        let mut stmt = self
+            .db
+            .prepare_cached(concat!(
+                "INSERT INTO smt (id, path, left_child, right_child)",
+                "    VALUES (:id, :path, :left, :right)",
+            ))
+            .unwrap();
+
+        stmt.execute(named_params! {
+            ":id": id,
+            ":path": prefix.to_bytes(),
+            ":left": left,
+            ":right": right,
+        })
+        .unwrap();
 
         (Some(id), Some(prefix))
     }
@@ -147,18 +163,22 @@ impl SmtBackend for SmtSqlite {
     fn update(&self, id: &Hash, prefix: &Prefix, left: &Hash, right: &Hash) -> Hash {
         let new_id = hash_concat(left, right);
 
-        self.db
-            .execute(
-                "UPDATE smt SET id = :new_id, path = :path, left_child = :left, right_child = :right WHERE id = :id",
-                named_params! {
-                    ":new_id": new_id,
-                    ":path": prefix.to_bytes(),
-                    ":left": left,
-                    ":right": right,
-                    ":id": id,
-                },
-            )
+        let mut stmt = self
+            .db
+            .prepare_cached(concat!(
+                "UPDATE smt SET id = :new_id, path = :path, left_child = :left, right_child = :right",
+                "    WHERE id = :id",
+            ))
             .unwrap();
+
+        stmt.execute(named_params! {
+            ":new_id": new_id,
+            ":path": prefix.to_bytes(),
+            ":left": left,
+            ":right": right,
+            ":id": id,
+        })
+        .unwrap();
 
         new_id
     }

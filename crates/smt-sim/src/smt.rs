@@ -16,6 +16,10 @@ pub trait Smt {
     type Proof;
     type Error;
 
+    type Transaction<'a>
+    where
+        Self: 'a;
+
     /// Create a new Sparse Merkle Tree.
     fn new(db_path: &str) -> Result<Self, Self::Error>
     where
@@ -24,10 +28,10 @@ pub trait Smt {
     /// Create a transaction.
     ///
     /// All write operations will be batched until committed with [`Self::commit`].
-    fn prepare(&self);
+    fn prepare(&self) -> Self::Transaction<'_>;
 
     /// Commit the transaction. Writes all pending data to disk.
-    fn commit(&self);
+    fn commit(&self, tx: Self::Transaction<'_>);
 
     /// Insert a key-value pair into the tree at the given root (if any).
     fn insert(
@@ -54,15 +58,17 @@ impl Smt for SmtRocks {
     type Proof = Vec<(bool, Vec<u8>)>;
     type Error = monotree::Errors;
 
+    type Transaction<'a> = ();
+
     fn new(db_path: &str) -> Result<Self, Self::Error> {
         Ok(Self(RefCell::new(Monotree::new(db_path))))
     }
 
-    fn prepare(&self) {
+    fn prepare(&self) -> Self::Transaction<'_> {
         self.0.borrow_mut().prepare();
     }
 
-    fn commit(&self) {
+    fn commit(&self, _tx: Self::Transaction<'_>) {
         self.0.borrow_mut().commit();
     }
 
@@ -88,15 +94,17 @@ impl Smt for SmtSled {
     type Proof = Vec<(bool, Vec<u8>)>;
     type Error = monotree::Errors;
 
+    type Transaction<'a> = ();
+
     fn new(db_path: &str) -> Result<Self, Self::Error> {
         Ok(Self(RefCell::new(Monotree::new(db_path))))
     }
 
-    fn prepare(&self) {
+    fn prepare(&self) -> Self::Transaction<'_> {
         self.0.borrow_mut().prepare();
     }
 
-    fn commit(&self) {
+    fn commit(&self, _tx: Self::Transaction<'_>) {
         self.0.borrow_mut().commit();
     }
 

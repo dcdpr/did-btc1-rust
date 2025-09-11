@@ -181,7 +181,7 @@ where
     let mut root = None;
     let mut kv_pairs = Vec::with_capacity(cohort_size);
 
-    smt.prepare();
+    let tx = smt.prepare();
     for i in 0..cohort_size {
         let key = random_hash();
         let value = random_hash();
@@ -192,7 +192,7 @@ where
             std::fs::write(format!("smt.{i}.mmd"), diagram).unwrap();
         }
     }
-    smt.commit();
+    smt.commit(tx);
 
     (smt, root.unwrap(), kv_pairs)
 }
