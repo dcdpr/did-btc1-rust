@@ -9,7 +9,7 @@
 //! backend.
 
 use super::Smt;
-use super::tree::{Prefix, Proof, SmtBackend, SmtNode, get_nth_bit, hash_concat};
+use super::tree::{Arrow, Prefix, Proof, SmtBackend, SmtNode, get_nth_bit, hash_concat};
 use monotree::Hash;
 use onlyerror::Error;
 use rusqlite::{Connection, OptionalExtension as _, Row, named_params, types::ValueRef};
@@ -88,7 +88,7 @@ impl SmtBackend for SmtSqlite {
     fn get_node(&self, id: &Hash) -> Option<SmtNode> {
         self.db
             .query_one(
-                "SELECT path, left_child, right_child FROM smt WHERE id = :id",
+                "SELECT path, key_value, left_child, right_child FROM smt WHERE id = :id",
                 named_params! {
                     ":id": id,
                 },
@@ -99,14 +99,16 @@ impl SmtBackend for SmtSqlite {
     }
 
     fn insert_leaf(&self, key: &Hash, value: &Hash) -> Hash {
-        let id = hash_concat(key, value);
+        let key_value = hash_concat(key, value);
+        let id = Arrow::leaf_hash(key, &key_value);
 
         self.db
             .execute(
-                "INSERT INTO smt (id, path) VALUES (:id, :path)",
+                "INSERT INTO smt (id, path, key_value) VALUES (:id, :path, :key_value)",
                 named_params! {
                     ":id": id,
                     ":path": key,
+                    ":key_value": key_value,
                 },
             )
             .unwrap();
@@ -164,8 +166,8 @@ impl SmtBackend for SmtSqlite {
 
 impl SmtNode {
     fn from_sql(row: &Row<'_>) -> rusqlite::Result<Self> {
-        let left = row.get_ref(1)?;
-        let right = row.get_ref(2)?;
+        let left = row.get_ref(2)?;
+        let right = row.get_ref(3)?;
 
         match (left, right) {
             (ValueRef::Blob(left), ValueRef::Blob(right)) => {
@@ -184,7 +186,10 @@ impl SmtNode {
                 })
             }
 
-            (ValueRef::Null, ValueRef::Null) => Ok(Self::Leaf { key: row.get(0)? }),
+            (ValueRef::Null, ValueRef::Null) => Ok(Self::Leaf {
+                key: row.get(0)?,
+                key_value: row.get(1)?,
+            }),
 
             _ => Err(rusqlite::Error::ExecuteReturnedResults),
         }

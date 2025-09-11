@@ -10,7 +10,7 @@
 //! somewhat trivial to rebuild tree state from logs.
 
 use super::Smt;
-use super::tree::{Prefix, Proof, SmtBackend, SmtNode, get_nth_bit, hash_concat};
+use super::tree::{Arrow, Prefix, Proof, SmtBackend, SmtNode, get_nth_bit, hash_concat};
 use monotree::Hash;
 use onlyerror::Error;
 use std::io::{BufWriter, Write as _};
@@ -87,11 +87,16 @@ impl SmtBackend for SmtNih {
     }
 
     fn insert_leaf(&self, key: &Hash, value: &Hash) -> Hash {
-        let id = hash_concat(key, value);
+        let key_value = hash_concat(key, value);
+        let id = Arrow::leaf_hash(key, &key_value);
 
-        self.map
-            .borrow_mut()
-            .insert(id, SmtNode::Leaf { key: *key });
+        self.map.borrow_mut().insert(
+            id,
+            SmtNode::Leaf {
+                key: *key,
+                key_value,
+            },
+        );
 
         id
     }

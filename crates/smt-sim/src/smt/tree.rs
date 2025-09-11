@@ -44,11 +44,14 @@ pub(crate) trait SmtBackend {
 
         if let Some(root) = root {
             match self.get_node(root).ok_or(Error::InvalidRoot)? {
-                SmtNode::Leaf { key: old_key } => {
+                SmtNode::Leaf {
+                    key: old_key,
+                    key_value,
+                } => {
                     // When the root is a leaf node, create a new root and sibling leaf node, unless
                     // the key already exists.
                     if key == &old_key {
-                        if &hash_concat(key, value) != root {
+                        if hash_concat(key, value) != key_value {
                             Err(Error::ValueChanged.into())
                         } else {
                             Ok((Some(*root), None))
@@ -137,10 +140,18 @@ pub(crate) trait SmtBackend {
         key: &Hash,
         depth: u16,
     ) -> Result<(), Self::Error> {
-        // TODO: Only return `InvalidRoot` when depth == 0.
-        // When deeper, return a proof-of-non-inclusion.
         match self.get_node(root).ok_or(Error::InvalidRoot)? {
-            SmtNode::Leaf { .. } => Ok(()),
+            SmtNode::Leaf {
+                key: leaf_key,
+                key_value,
+            } => {
+                if &leaf_key != key {
+                    // Proof-of-non-inclusion
+                    proof.path.push((Arrow::sibling(&leaf_key), key_value));
+                }
+
+                Ok(())
+            }
 
             SmtNode::Node {
                 prefix,
@@ -173,12 +184,13 @@ pub(crate) trait SmtBackend {
 
     fn render_inner(&self, mermaid: &mut String, hash: &Hash) -> Option<()> {
         match self.get_node(hash)? {
-            SmtNode::Leaf { key } => {
+            SmtNode::Leaf { key, key_value } => {
                 writeln!(
                     mermaid,
-                    r#"  {}["Leaf<br />hash: {}<br />key: {}"]"#,
+                    r#"  {}["Leaf<br />hash: {}<br />key-value: {}<br />key: {}"]"#,
                     hex::encode(&hash[..4]),
                     hex::encode(&hash[..4]),
+                    hex::encode(&key_value[..4]),
                     hex::encode(&key[..4]),
                 )
                 .unwrap();
@@ -218,6 +230,7 @@ pub(crate) trait SmtBackend {
 pub(crate) enum SmtNode {
     Leaf {
         key: Hash,
+        key_value: Hash,
     },
     Node {
         prefix: Prefix,
@@ -230,9 +243,10 @@ impl fmt::Debug for SmtNode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("SmtNode::")?;
         match self {
-            Self::Leaf { key } => f
+            Self::Leaf { key, key_value } => f
                 .debug_struct("Leaf")
                 .field("key", &hex::encode(key))
+                .field("key_value", &hex::encode(key_value))
                 .finish(),
 
             Self::Node {
@@ -367,7 +381,8 @@ impl enc::Encode for Prefix {
 #[derive(Clone)]
 pub struct Proof {
     // TODO: `Arrow` should not be embedded with the hashes. It should be separate variable-length
-    // bitmap. This will reduce the size of serialized proofs proportional to the cohort size.
+    // bitmap. This will reduce the size of serialized proofs proportional to the cohort size. It
+    // will also allow proofs of non-inclusion to be verifiable. They are not currently (see below).
     // // bitmap: Prefix,
 
     // TODO: Probably want to reverse the order to be compatible with the spec. VecDeque can do that
@@ -388,13 +403,31 @@ impl Proof {
     ///
     /// The key-value pair is hashed to create the initial leaf hash: `hash(key | value)`.
     pub fn verify(&self, root: &Hash, key: &Hash, value: &Hash) -> Result<(), Error> {
-        let mut hash = hash_concat(key, value);
+        let hash = Arrow::leaf_hash(key, &hash_concat(key, value));
 
+        self.verify_inner(root, hash)
+    }
+
+    // TODO: The proof chain is guaranteed to begin at zero. However, because the key is not
+    // included in the hash chain, there is an implicit trust required on the implementation being
+    // correct.
+    //
+    // Suppose a bitmap of empty nodes was included in the proof. That would allow replacement of
+    // the internal `Arrow` type with a variable-length bitmap of empty nodes in the path. With that
+    // change, the proof uses the key to compute every intermediate hash all the way down all 257
+    // levels of the tree, starting from zero.
+    //
+    // This is not a problem if a nonce is required to prove non-inclusion. (The nonce is in fact a
+    // proof of inclusion with a zero value for the KV pair.)
+    //
+    /// Verify that the proof is a non-inclusion against a known `root`.
+    pub fn verify_noninclusion(&self, root: &Hash) -> Result<(), Error> {
+        self.verify_inner(root, [0; 32])
+    }
+
+    fn verify_inner(&self, root: &Hash, mut hash: Hash) -> Result<(), Error> {
         for (arrow, sibling) in self.path.iter().rev() {
-            hash = match arrow {
-                Arrow::Left => hash_concat(sibling, &hash),
-                Arrow::Right => hash_concat(&hash, sibling),
-            };
+            hash = arrow.hash(&hash, sibling);
         }
 
         if hash.as_slice() == root {
@@ -417,9 +450,33 @@ impl fmt::Display for Proof {
 
 /// The sibling direction in relation to the traversal path.
 #[derive(Copy, Clone)]
-enum Arrow {
+pub(crate) enum Arrow {
     Left,
     Right,
+}
+
+impl Arrow {
+    /// Get a sibling arrow for a key.
+    pub(crate) fn sibling(key: &Hash) -> Self {
+        if key[31] & 1 == 1 {
+            Self::Left
+        } else {
+            Self::Right
+        }
+    }
+
+    /// Get a leaf hash for key and key-value hashes.
+    pub(crate) fn leaf_hash(key: &Hash, key_value: &Hash) -> Hash {
+        Self::sibling(key).hash(&[0; 32], key_value)
+    }
+
+    /// Get a hash for key, key-value, and sibling hashes.
+    pub(crate) fn hash(self, key_value: &Hash, sibling: &Hash) -> Hash {
+        match self {
+            Self::Left => hash_concat(sibling, key_value),
+            Self::Right => hash_concat(key_value, sibling),
+        }
+    }
 }
 
 impl fmt::Display for Arrow {
@@ -540,6 +597,37 @@ mod tests {
     }
 
     #[test]
+    fn test_tree_duplicate_inserts() {
+        let db_path = NamedTempFile::new().unwrap();
+        let tree = SmtNih::new(&db_path.path().to_string_lossy()).unwrap();
+
+        let key = [0; 32];
+        let value = [0; 32];
+
+        let mut root = None;
+
+        // Insert the first key, then attempt to insert a duplicate.
+        root = tree.insert(root.as_ref(), &key, &value).unwrap();
+        root = tree.insert(root.as_ref(), &key, &value).unwrap();
+
+        // Insert a bunch of random keys.
+        for _ in 0..32 {
+            let random_key = rand::random();
+
+            root = tree.insert(root.as_ref(), &random_key, &value).unwrap();
+        }
+
+        // The root must not change when a duplicate is inserted.
+        assert_eq!(tree.insert(root.as_ref(), &key, &value).unwrap(), root);
+
+        // Attempting to change the value at an existing key will return an error.
+        assert!(matches!(
+            tree.insert(root.as_ref(), &key, &[0xff; 32]),
+            Err(NihError::Smt(Error::ValueChanged)),
+        ));
+    }
+
+    #[test]
     fn arbtest_proofs() {
         arbtest(|u| {
             // Generate a bunch of hashes
@@ -565,6 +653,8 @@ mod tests {
                 let proof = tree.get_proof(&root, hash).unwrap();
 
                 proof.verify(&root, hash, hash).unwrap();
+
+                assert!(proof.verify_noninclusion(&root).is_err());
             }
 
             Ok(())
@@ -599,6 +689,9 @@ mod tests {
 
             left_proof.verify(&root, &leftmost, &leftmost).unwrap();
             right_proof.verify(&root, &rightmost, &rightmost).unwrap();
+
+            assert!(left_proof.verify_noninclusion(&root).is_err());
+            assert!(right_proof.verify_noninclusion(&root).is_err());
 
             // All siblings in the leftmost proof will point to the right.
             for (arrow, _) in left_proof.path {
@@ -659,6 +752,9 @@ mod tests {
             left_proof.verify(&root, &leftmost, &leftmost).unwrap();
             right_proof.verify(&root, &rightmost, &rightmost).unwrap();
 
+            assert!(left_proof.verify_noninclusion(&root).is_err());
+            assert!(right_proof.verify_noninclusion(&root).is_err());
+
             // All siblings in the leftmost proof will point to the right.
             for (arrow, _) in left_proof.path {
                 assert!(matches!(arrow, Arrow::Right));
@@ -677,33 +773,36 @@ mod tests {
     }
 
     #[test]
-    fn test_tree_duplicate_inserts() {
-        let db_path = NamedTempFile::new().unwrap();
-        let tree = SmtNih::new(&db_path.path().to_string_lossy()).unwrap();
+    fn arbtest_proof_of_non_inclusion() {
+        arbtest(|u| {
+            let db_path = NamedTempFile::new().unwrap();
+            let tree = SmtNih::new(&db_path.path().to_string_lossy()).unwrap();
 
-        let key = [0; 32];
-        let value = [0; 32];
+            let num_hashes = u.int_in_range(10..=100)?;
+            let hashes = arb_hashes(u, num_hashes, 0..0)?;
+            let half = hashes.len() / 2;
+            let mut i = 0;
+            let (included, excluded): (Vec<_>, Vec<_>) = hashes.into_iter().partition(|_| {
+                i += 1;
+                i >= half
+            });
 
-        let mut root = None;
+            // Insert half of the nodes.
+            let mut root = None;
+            for hash in included {
+                root = tree.insert(root.as_ref(), &hash, &hash).unwrap();
+            }
 
-        // Insert the first key, then attempt to insert a duplicate.
-        root = tree.insert(root.as_ref(), &key, &value).unwrap();
-        root = tree.insert(root.as_ref(), &key, &value).unwrap();
+            // Ensure that proofs for all random hashes are proofs of non-inclusion
+            let root = root.unwrap();
+            for hash in excluded {
+                let proof = tree.get_proof(&root, &hash).unwrap();
+                proof.verify_noninclusion(&root).unwrap();
+            }
 
-        // Insert a bunch of random keys.
-        for _ in 0..32 {
-            let random_key = rand::random();
-
-            root = tree.insert(root.as_ref(), &random_key, &value).unwrap();
-        }
-
-        // The root must not change when a duplicate is inserted.
-        assert_eq!(tree.insert(root.as_ref(), &key, &value).unwrap(), root);
-
-        // Attempting to change the value at an existing key will return an error.
-        assert!(matches!(
-            tree.insert(root.as_ref(), &key, &[0xff; 32]),
-            Err(NihError::Smt(Error::ValueChanged)),
-        ));
+            Ok(())
+        })
+        .size_min(10_000)
+        .size_max(100_000);
     }
 }

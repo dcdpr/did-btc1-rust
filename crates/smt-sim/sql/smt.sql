@@ -3,6 +3,7 @@
 CREATE TABLE IF NOT EXISTS smt (
     id BLOB NOT NULL PRIMARY KEY,
     path BLOB,
+    key_value BLOB,
     left_child BLOB,
     right_child BLOB
 ) STRICT;

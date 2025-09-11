@@ -62,6 +62,26 @@ fn create_proof() {
     println!("root: {}", hex::encode(root));
     println!();
 
+    let mut excluded_hash = kv_pairs[0].0;
+    for byte in &mut excluded_hash {
+        // Invert all bytes in the hash.
+        *byte ^= 0xff;
+    }
+    if kv_pairs.iter().all(|(k, _)| k != &excluded_hash) {
+        let proof = smt.get_proof(&root, &excluded_hash).unwrap();
+
+        println!("Checking proof of non-inclusion...");
+        println!("key: {}", hex::encode(excluded_hash));
+        println!("proof: {proof}");
+
+        proof
+            .verify_noninclusion(&root)
+            .expect("must prove non-inclusion");
+
+        println!("Verified the key is not included in the SMT!");
+        println!();
+    }
+
     for (key, value) in kv_pairs {
         let proof = smt.get_proof(&root, &key).unwrap();
 
@@ -71,7 +91,13 @@ fn create_proof() {
         println!("proof: {proof}");
         // println!("proof: {}", print_proof(&proof)); // for monotree
 
-        proof.verify(&root, &key, &value).unwrap();
+        proof
+            .verify(&root, &key, &value)
+            .expect("must prove inclusion");
+        proof
+            .verify_noninclusion(&root)
+            .expect_err("cannot prove both inclusion and non-inclusion");
+
         println!();
     }
 
