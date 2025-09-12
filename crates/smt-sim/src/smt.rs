@@ -13,7 +13,7 @@ pub struct SmtSled(RefCell<Monotree<Sled, Sha2>>);
 
 pub trait Smt {
     const EXT: &str;
-    type Proof;
+    type Proof: bincode::Encode;
     type Error;
 
     type Transaction<'a>

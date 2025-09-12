@@ -378,7 +378,7 @@ impl enc::Encode for Prefix {
 /// Constructed by [`Smt::get_proof`].
 ///
 /// [`Smt::get_proof`]: crate::smt::Smt::get_proof
-#[derive(Clone)]
+#[derive(Clone, Encode)]
 pub struct Proof {
     // TODO: `Arrow` should not be embedded with the hashes. It should be separate variable-length
     // bitmap. This will reduce the size of serialized proofs proportional to the cohort size. It
@@ -449,7 +449,7 @@ impl fmt::Display for Proof {
 }
 
 /// The sibling direction in relation to the traversal path.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Encode)]
 pub(crate) enum Arrow {
     Left,
     Right,
