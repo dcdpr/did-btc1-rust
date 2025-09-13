@@ -1,20 +1,13 @@
 use crate::smt::{Smt, SmtNih, SmtRocks, SmtSled, SmtSqlite, hash_concat};
 use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 use smt::Hash;
-use std::collections::BTreeMap;
-use std::io::{BufWriter, Write as _};
-use std::{cell::RefCell, fmt::Write as _, fs::File, process::Command, time::Instant};
-
-#[cfg(target_os = "windows")]
-use std::os::windows::fs::MetadataExt as _;
-
-#[cfg(target_os = "macos")]
-use std::os::darwin::fs::MetadataExt as _;
-
-#[cfg(target_os = "linux")]
-use std::os::linux::fs::MetadataExt as _;
+use std::{cell::RefCell, fmt::Write as _, process::Command, time::Instant};
+use std::{collections::BTreeMap, io::Write as _};
 
 mod smt;
+
+// Number of randomized trials to run for SMT simulation.
+const TRIALS: u32 = 25;
 
 const DEFAULT_PRNG_SEED: [u8; 32] = [
     // echo -n 'https://xkcd.com/221/' | sha256sum
@@ -224,79 +217,80 @@ where
     //   - NOTE: When "use-nonce" is true, U = 1.0 (every user always updates)
 
     // let sizes = [5, 10, 100, 1_000, 10_000, 50_000, 100_000, 1_000_000];
-    let sizes = [100];
+    let sizes = [1_000];
+
+    println!("Running proof size benchmark...");
 
     for size in sizes {
-        // TODO: Make this a struct
-        // Stores a sparse 2D array of proof sizes (in bytes) by [M,U] coordinates.
-        let mut surface: BTreeMap<u64, BTreeMap<u64, u64>> = BTreeMap::new();
+        println!("Cohort size: {}", human_size(size));
 
+        let mut surface = Surface::new(size as u64);
         let db_path = format!("./db/smt-sim-{}.{}", human_size(size), T::EXT);
 
-        // Remove old DB (if any)
-        Command::new("rm").args(["-rf", &db_path]).output().unwrap();
+        for m in [0.0, 0.01, 0.05, 0.1, 0.25, 0.5, 0.75] {
+            if size > 1_000 {
+                println!("Running simulation with {}% mine...", m * 100.0);
+            }
 
-        let my_percentages = [0.0, 0.01, 0.05, 0.1, 0.25, 0.5, 0.75];
-
-        for m in my_percentages {
             let my_did_count = (size as f64 * m) as usize;
-
-            let smt = T::new(&db_path).unwrap();
             let kv_pairs = create_kv_pairs(size);
-
             let mut i = 0;
             let (mine, not_mine): (Vec<_>, Vec<_>) = kv_pairs.into_iter().partition(|_| {
                 i += 1;
 
                 i < my_did_count
             });
-
             let max_possible_updates = size as f64 * (1.0 - m);
 
-            // todo: is currently pulling from Uniform, we want gaussian?
-            let ave_num_updates = random_size(max_possible_updates as usize);
+            // TODO: Run two simulations:
+            //
+            // 1. Proofs of non-inclusion without nonce (done below)
+            // 2. Proofs of inclusion with nonce
+            //
+            // When plotting the diagram, pass both surfaces. The color is determined by the
+            // difference sampled from both surfaces.
 
-            // Insert all updates into the tree
-            let root = smt_demo(&smt, &not_mine[..ave_num_updates], false);
+            // Run some randomized trials to collect rough averages
+            for _trial in 0..TRIALS {
+                if size > 10_000 {
+                    // println!("Running trial {} of {TRIALS}", trial + 1);
+                    print!(".");
+                    std::io::stdout().lock().flush().unwrap();
+                }
 
-            // Create all of my proofs of non-inclusion
-            let my_proofs = mine
-                .into_iter()
-                .map(|(key, _)| smt.get_proof(&root, &key))
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap();
+                // todo: is currently Uniform sampling, we want Gaussian?
+                let avg_num_updates = random_size(max_possible_updates as usize);
 
-            // Write all proofs to disk
-            let proof_path = format!("./db/smt-sim-{}-{m}.proof", human_size(size));
-            write_proofs::<T>(&proof_path, &my_proofs);
+                // Insert all updates into the tree
+                let smt = T::new(&db_path).unwrap();
+                let root = smt_demo(&smt, &not_mine[..avg_num_updates], false);
 
-            let proof_size = Command::new("du")
-                .args(["-hs", &proof_path])
-                .output()
-                .unwrap();
-            println!("{}", String::from_utf8_lossy(&proof_size.stdout).trim());
+                // Create all of my proofs of non-inclusion
+                let my_proofs = mine
+                    .iter()
+                    .map(|(key, _)| smt.get_proof(&root, key))
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
 
-            let proof_metadata = std::fs::metadata(&proof_path).unwrap();
+                // Write all proofs to memory
+                let mut writer = Vec::new();
+                bincode::encode_into_std_write(my_proofs, &mut writer, bincode::config::standard())
+                    .unwrap();
+                let byte_count = writer.len() as u64;
 
-            #[cfg(target_os = "windows")]
-            let proof_size_in_bytes = proof_metadata.file_size();
+                // Insert the proof size into the surface
+                surface.insert((m * 100.0) as u64, avg_num_updates as u64, byte_count);
+            }
 
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
-            let proof_size_in_bytes = proof_metadata.st_size();
-
-            let entry = surface.entry(my_did_count as u64).or_default();
-            entry.insert(ave_num_updates as u64, proof_size_in_bytes);
+            if size > 10_000 {
+                println!();
+            }
         }
 
-        draw_chart(size as u64, surface);
-    }
-}
+        draw_chart(&surface);
 
-fn write_proofs<T: Smt>(proof_path: &str, proofs: &[T::Proof]) {
-    let file = File::create(proof_path).unwrap();
-    let mut writer = BufWriter::new(&file);
-    bincode::encode_into_std_write(proofs, &mut writer, bincode::config::standard()).unwrap();
-    writer.flush().unwrap();
+        println!();
+    }
 }
 
 fn smt_demo<T>(smt: &T, kv_pairs: &[(Hash, Hash)], diagrams: bool) -> Hash
@@ -328,50 +322,141 @@ fn human_size(size: usize) -> String {
     }
 }
 
-fn draw_chart(cohort_size: u64, surface: BTreeMap<u64, BTreeMap<u64, u64>>) {
+fn draw_chart(surface: &Surface) {
     use plotters::prelude::*;
 
-    let filename = format!("surface_{cohort_size}.svg");
-    let drawing_area =
-        SVGBackend::new(&filename, (640, 480)).into_drawing_area();
+    let cohort_size = surface.cohort_size;
+    let max_bytes = surface.max_bytes;
+    let filename = format!("./db/surface_{}.svg", human_size(cohort_size as usize));
+    let drawing_area = SVGBackend::new(&filename, (800, 600)).into_drawing_area();
+
+    // Draw background.
     drawing_area.fill(&WHITE).unwrap();
 
     let mut chart_context = ChartBuilder::on(&drawing_area)
-        .margin(10)
-        .build_cartesian_3d(0..cohort_size, 0..cohort_size, 0..cohort_size)
-        .unwrap();
-    chart_context.configure_axes().draw().unwrap();
-
-    let axis_title_style = ("sans-serif", 20, &BLACK).into_text_style(&drawing_area);
-    chart_context
-        .draw_series(
-            [
-                ("x", (cohort_size, 0, 0)),
-                ("y", (0, cohort_size, 0)),
-                ("z", (0, 0, cohort_size)),
-            ]
-            .map(|(label, position)| Text::new(label, position, &axis_title_style)),
-        )
+        .margin(25)
+        .x_label_area_size(50)
+        .y_label_area_size(70)
+        .build_cartesian_2d(0..100_u64, 0..cohort_size)
         .unwrap();
 
+    // Green: 0% difference. Red: 100% difference.
+    let hue = |x, y| (1.0 - (surface.sample(x, y) as f64 / max_bytes as f64)) * 0.36;
+
+    // // Rainbow
+    // let hue = |x, y| surface.sample(x, y) as f64 / max_bytes as f64;
+
+    // Draw surface.
+    let v = cohort_size / 100.min(cohort_size);
     chart_context
-        // .draw_series(
-        //     SurfaceSeries::xoz(
-        //         (-30..30).map(|v| v as f64 / 10.0),
-        //         (-30..30).map(|v| v as f64 / 10.0),
-        //         |x: f64, z: f64| (0.4 * (x * x + z * z)).cos(),
-        //     )
-        //     .style_func(&|y| HSLColor(0.6666, y + 0.5, 0.5).mix(0.8).filled()),
-        // )
-        .draw_series(
-            SurfaceSeries::xoz(
-                0..cohort_size,
-                0..cohort_size,
-                |x: u64, z: u64| {
-                    surface.get(&x).and_then(|t| t.get(&z).copied()).unwrap_or_default()
-                }
-            )
-                .style_func(&|y| HSLColor(0.6666, *y as f64 + 0.5, 0.5).mix(0.8).filled()),
-        )
+        .draw_series((0..cohort_size).step_by(v as usize).flat_map(|y| {
+            (0..100).map(move |x| {
+                Rectangle::new(
+                    [(x, y), (x + 1, y + v)],
+                    HSLColor(hue(x, y), 1.0, 0.5).filled(),
+                )
+            })
+        }))
         .unwrap();
+
+    let label_style = ("Calibri", 25, &BLACK).into_text_style(&drawing_area);
+
+    // Draw axes.
+    chart_context
+        .configure_mesh()
+        .label_style(label_style)
+        .x_desc("M: Percentage that are My DIDs")
+        .y_desc("U: Average updates by others")
+        .y_label_formatter(&|y| human_size(*y as usize).to_string())
+        .draw()
+        .unwrap();
+
+    // TODO: Draw color legend.
+
+    println!("Phase transition diagram written to {filename}");
+}
+
+/// A sparse surface for representing the SMT simulation's phase transition diagram.
+struct Surface {
+    /// Samples are stored sparsely as discrete points in a 2D [`BTreeMap`].
+    ///
+    /// - The outer dimension is `M` (Percentage of DIDs in the tree that are "mine").
+    /// - The inner dimension is `U` (Average number of updates from other DIDs in the tree).
+    samples: BTreeMap<u64, BTreeMap<u64, u64>>,
+
+    /// Cohort size for the simulation.
+    cohort_size: u64,
+
+    /// Stores the maximum byte size seen in all samples.
+    max_bytes: u64,
+}
+
+impl Surface {
+    fn new(cohort_size: u64) -> Self {
+        Self {
+            samples: BTreeMap::new(),
+            cohort_size,
+            max_bytes: 0,
+        }
+    }
+
+    /// Insert a surface height `d` at surface coordinate `[m,u]`.
+    fn insert(&mut self, m: u64, u: u64, d: u64) {
+        self.samples.entry(m).or_default().insert(u, d);
+
+        self.max_bytes = self.max_bytes.max(d);
+    }
+
+    /// Get the surface height `d` at coordinates `[m,u]`.
+    fn sample(&self, m: u64, u: u64) -> u64 {
+        // To make the sparse surface continuous: Sample two points along each axis then linearly
+        // interpolate between them.
+
+        let b = self.max_bytes as f64;
+
+        // Coordinates at "previous M".
+        let (x0, z0) = self
+            .samples
+            .range(..=m)
+            .next_back()
+            .map(|(x0, mine)| {
+                (
+                    *x0 as f64 / 100.0,
+                    mine.range(..=u)
+                        .next_back()
+                        .map(|(_, bytes)| *bytes as f64 / b)
+                        .unwrap_or_default(),
+                )
+            })
+            .unwrap_or_default();
+
+        // Coordinates at "next M".
+        let (x1, z1) = self
+            .samples
+            .range(m..)
+            .next()
+            .map(|(x1, mine)| {
+                (
+                    *x1 as f64 / 100.0,
+                    mine.range(..=u)
+                        .next_back()
+                        .map(|(_, bytes)| *bytes as f64 / b)
+                        .unwrap_or(z0),
+                )
+            })
+            .unwrap_or((1.0, z0));
+
+        // Calculate the "time" for interpolation across M axis.
+        let xd = x1 - x0;
+        let x = m as f64 / 100.0;
+        let t = if xd > 0.0 { (x - x0) / xd } else { 0.0 };
+
+        // Interpolate and scale back to byte range.
+        (lerp(z0, z1, t) * b) as u64
+    }
+}
+
+/// Linear interpolation between `a` and `b` at time `t`.
+fn lerp(a: f64, b: f64, t: f64) -> f64 {
+    t.mul_add(b - a, a)
 }
